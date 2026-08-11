@@ -8,23 +8,49 @@ brand-new on every checkout.
 
 from __future__ import annotations
 
+import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
-from sqlalchemy import Engine, create_engine
+from sqlalchemy import Engine, create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import StaticPool
 
 from lr_cleanup.database.models import Base
 
+_MEMORY_URL = "sqlite:///:memory:"
+
 
 def make_engine(database_url: str) -> Engine:
-    connect_args = {"check_same_thread": False} if database_url.startswith("sqlite") else {}
-    if database_url.startswith("sqlite:///") and database_url != "sqlite:///:memory:":
+    is_sqlite = database_url.startswith("sqlite")
+    connect_args: dict[str, Any] = {"check_same_thread": False} if is_sqlite else {}
+    engine_kwargs: dict[str, Any] = {}
+
+    if database_url == _MEMORY_URL:
+        # The FastAPI service (Milestone 2) serves each request on a worker
+        # thread; a plain :memory: engine hands each thread its own private
+        # database, silently losing data across requests. StaticPool shares
+        # one connection so tests using an in-memory DB behave like the
+        # single shared file-based DB used in production.
+        engine_kwargs["poolclass"] = StaticPool
+    elif database_url.startswith("sqlite:///"):
         db_path = database_url.removeprefix("sqlite:///")
-        if db_path not in (":memory:",):
-            Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-    return create_engine(database_url, connect_args=connect_args)
+        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+
+    engine = create_engine(database_url, connect_args=connect_args, **engine_kwargs)
+
+    if is_sqlite:
+
+        @event.listens_for(engine, "connect")
+        def _set_sqlite_pragmas(dbapi_connection: sqlite3.Connection, _: object) -> None:
+            cursor = dbapi_connection.cursor()
+            cursor.execute("PRAGMA foreign_keys=ON")
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.close()
+
+    return engine
 
 
 def init_db(engine: Engine) -> None:

@@ -32,16 +32,18 @@ has mature, well-tested libraries for it (OpenCV, NumPy, ImageHash).
 
 | Milestone | Scope | Status |
 |---|---|---|
-| 1 | Standalone Python analyzer: config, DB, hashing, pHash, sharpness, exposure, grouping, keeper ranking, CLI, tests | **Implemented** (this change) |
-| 2 | FastAPI service: health, jobs, background processing, results | Not started |
+| 1 | Standalone Python analyzer: config, DB, hashing, pHash, sharpness, exposure, grouping, keeper ranking, CLI, tests | **Implemented** |
+| 2 | FastAPI service: health, jobs, background processing, results | **Implemented** (this change) |
 | 3 | Lightroom Lua plugin: selection → renditions → job → metadata/collections | Not started |
 | 4 | MCP server: read tools + action preparation | Not started |
 | 5 | Optional MCP → Lightroom command polling | Not started, out of core scope |
 
-Directories `src/lr_cleanup/api/`, `src/lr_cleanup/mcp_server/`, and
+Directories `src/lr_cleanup/mcp_server/` and
 `lightroom-plugin/AICleanup.lrplugin/` are intentionally not populated yet.
 Creating empty package stubs for code that doesn't exist yet would misstate
-progress; they will be added when their milestone starts.
+progress; they will be added when their milestone starts. `src/lr_cleanup/api/`
+now exists but deliberately has no `actions.py` — see "Milestone-2 component
+map" below for why.
 
 ## Milestone-1 component map
 
@@ -68,6 +70,63 @@ so the CLI's `register` command points directly at image files on disk
 are nullable for this reason — they become required-in-practice once the
 plugin (Milestone 3) is the thing calling `POST /api/v1/photos/register`
 with a real Lightroom-rendered preview path.
+
+## Milestone-2 component map
+
+```text
+api/app.py            FastAPI app factory, /health, lifespan (engine + session_factory)
+  │
+  ├─ api/deps.py       per-request Session/Repository dependency wiring
+  ├─ api/jobs.py        POST /api/v1/photos/register, POST /api/v1/jobs, GET /api/v1/jobs/{id}
+  └─ api/results.py     GET /api/v1/jobs/{id}/results, GET /api/v1/groups/{id}
+       │
+       ▼
+service/analyzer.py   (unchanged pipeline, now also callable in two phases:
+                        create_job() returns immediately, execute_job() runs
+                        the actual work)
+```
+
+**Background processing**: `POST /api/v1/jobs` persists a `PENDING`
+`AnalysisJob` row, commits it explicitly, and schedules a
+`BackgroundTasks` callback to run `execute_job`. The background callback
+opens its **own** database session via `app.state.session_factory` — it
+must not reuse the request's session, since that session's dependency
+teardown isn't guaranteed to still be open by the time the background task
+runs (standard FastAPI/Starlette guidance). This required splitting
+`AnalyzerService.run_job` into `create_job` (fast, synchronous, returns a
+job id) and `execute_job` (the actual analysis loop) — the CLI's `run_job`
+is now a thin convenience wrapper calling both in sequence.
+
+**Group-to-job association**: `regenerate_groups()` now accepts an
+`analysis_job_id` and tags every group it creates with it, so
+`GET /api/v1/jobs/{id}/results` can return exactly the groups that job's
+run produced. Since `regenerate_groups()` still does a full, idempotent
+recompute (clearing all previous groups first — see docs/algorithms.md),
+"the groups tagged with job X" and "the current full group set" are the
+same thing immediately after job X finishes; an older job's `results`
+response will report an empty group list once a newer job has re-tagged
+everything. This is a known MVP simplification, not a bug: incremental
+(non-full-recompute) grouping is a scale improvement to revisit alongside
+the "100,000+ photos" work below.
+
+**`api/actions.py` deliberately does not exist yet.** The brief's full HTTP
+API list includes `POST /api/v1/actions/prepare`, `GET
+/api/v1/actions/pending`, and the `confirm`/`undo` endpoints, but Milestone
+2's stated deliverables are health/jobs/background-processing/results only.
+Action preparation is the mechanism that will eventually let MCP (Milestone
+4) stage a change for human confirmation (docs/safety.md) — building it
+ahead of an actual caller (the MCP server) risks guessing at a shape that
+doesn't fit. The `PreparedAction`/`ActionLog` tables already exist
+(Milestone 1) and are unchanged.
+
+**SQLite pooling**: Milestone 1's CLI was single-threaded and sequential,
+so the default SQLite connection pooling was never an issue. The API
+serves each request on a worker thread and runs background tasks on
+another, so `database/session.py::make_engine` now pins `sqlite:///:memory:`
+engines to `StaticPool` (one shared connection across threads — a plain
+per-thread pool would silently give each thread its own empty in-memory
+database) and enables `PRAGMA foreign_keys=ON` / `PRAGMA journal_mode=WAL`
+on every SQLite connection for better concurrent read/write behavior.
 
 ## Incremental analysis / scale
 

@@ -12,12 +12,13 @@ mandatory constraint list.
 
 ## Status
 
-**Milestone 1 (standalone Python analyzer) is implemented.** There is no
-HTTP service, Lightroom plugin, or MCP server yet — see
+**Milestones 1 (standalone analyzer) and 2 (local FastAPI service) are
+implemented.** There is no Lightroom plugin or MCP server yet — see
 [`docs/architecture.md`](docs/architecture.md) for the milestone plan. What
-exists today is a CLI that registers a folder of images, analyzes them
-(sharpness, exposure, hashing), groups exact/near-duplicates, and produces
-an explainable keeper ranking, all stored in a local SQLite database.
+exists today: a CLI *and* a local-only HTTP API that both register photos,
+run the analysis pipeline (sharpness, exposure, hashing) as background
+jobs, group exact/near-duplicates, and produce an explainable keeper
+ranking — all stored in a local SQLite database.
 
 ## Architecture
 
@@ -107,20 +108,61 @@ All thresholds/weights used above come from `.env` /
 [`src/lr_cleanup/config.py`](src/lr_cleanup/config.py) — see
 [`docs/algorithms.md`](docs/algorithms.md) for what each one means.
 
+## Running the local FastAPI service
+
+```bash
+source .venv/bin/activate
+scripts/run-server.sh      # or: lr-cleanup-server
+```
+
+This binds to `127.0.0.1:8765` by default (see `.env` /
+[`src/lr_cleanup/config.py`](src/lr_cleanup/config.py)) and refuses to
+start if `LR_CLEANUP_HOST` is set to anything non-loopback — see
+[`docs/safety.md`](docs/safety.md). It creates/updates
+`data/lr_cleanup.db` on startup the same way the CLI does.
+
+Interactive API docs are served at <http://127.0.0.1:8765/docs> once running.
+
+### Verifying `/health`
+
+```bash
+curl -s http://127.0.0.1:8765/health
+# {"status":"ok","version":"0.1.0","database":"ok"}
+```
+
+### Example: register a photo, run a job, fetch results
+
+```bash
+curl -s -X POST http://127.0.0.1:8765/api/v1/photos/register \
+  -H 'content-type: application/json' \
+  -d '{"photos":[{"original_path":"/absolute/path/to/photo.jpg","file_size":123456,"file_mtime":1730000000.0}]}'
+
+curl -s -X POST http://127.0.0.1:8765/api/v1/jobs \
+  -H 'content-type: application/json' -d '{"regenerate_groups": true}'
+# => {"job_id": "...", "status": "pending", ...} — analysis runs in the background
+
+curl -s http://127.0.0.1:8765/api/v1/jobs/<job_id>
+curl -s http://127.0.0.1:8765/api/v1/jobs/<job_id>/results
+curl -s http://127.0.0.1:8765/api/v1/groups/<group_id>
+```
+
+`api/actions.py` (prepare/confirm/undo) doesn't exist yet — see
+[`docs/architecture.md`](docs/architecture.md)'s Milestone-2 component map
+for why it's deferred rather than stubbed out.
+
 ## Running the tests
 
 ```bash
 source .venv/bin/activate
-pytest                # unit tests, synthetic in-process image fixtures — no personal data needed
+pytest                # unit + integration tests — synthetic fixtures / in-memory DB, no personal data needed
 ruff check .           # lint
 mypy src/lr_cleanup     # type check (src/ only; tests aren't held to the same strictness)
 ```
 
-## Verifying `/health`
-
-Not applicable yet — the FastAPI service (`GET /health`, job endpoints,
-etc.) is Milestone 2 and hasn't been implemented. This section will be
-filled in when that lands.
+`tests/integration/` exercises the real FastAPI app via `TestClient` against
+an isolated in-memory SQLite database per test (see
+[`tests/integration/conftest.py`](tests/integration/conftest.py)) — nothing
+touches `data/lr_cleanup.db`.
 
 ## Installing the Lightroom plugin / connecting an MCP client
 
@@ -137,22 +179,24 @@ lightroom-ai-cleanup/
 ├── src/lr_cleanup/
 │   ├── analysis/                pure functions: hashing, phash, sharpness, exposure, grouping, keeper ranking
 │   ├── database/                SQLAlchemy models, repository, Alembic migrations
-│   ├── service/                 analyzer.py — orchestrates the pipeline (Milestone 1)
+│   ├── service/                 analyzer.py — orchestrates the pipeline (create_job/execute_job)
 │   ├── config.py                all thresholds/weights, env-driven
 │   ├── cli.py                   Milestone-1 CLI entry point (`lr-cleanup`)
-│   ├── api/                     FastAPI app — Milestone 2, not yet implemented
+│   ├── api/                     FastAPI app (`lr-cleanup-server`): app.py, deps.py, jobs.py, results.py
 │   └── mcp_server/               MCP tools — Milestone 4, not yet implemented
 ├── lightroom-plugin/            Lua plugin — Milestone 3, not yet implemented
 ├── tests/
 │   ├── unit/                    pytest, synthetic fixtures only
+│   ├── integration/              FastAPI TestClient against an isolated in-memory DB
 │   └── fixtures/                in-process synthetic image generators (no binary test assets)
-└── scripts/                     run-server.sh / install-plugin.sh — added with Milestones 2–3
+└── scripts/                     run-server.sh (install-plugin.sh added with Milestone 3)
 ```
 
-`api/`, `mcp_server/`, `lightroom-plugin/AICleanup.lrplugin/`, and
-`scripts/` are intentionally not populated yet — see
-[`docs/architecture.md`](docs/architecture.md) for the milestone-by-milestone
-plan and why empty stubs weren't created ahead of the code that needs them.
+`mcp_server/` and `lightroom-plugin/AICleanup.lrplugin/` are intentionally
+not populated yet — see [`docs/architecture.md`](docs/architecture.md) for
+the milestone-by-milestone plan and why empty stubs weren't created ahead
+of the code that needs them. `api/` deliberately has no `actions.py` yet
+either, for the same reason (see that doc's Milestone-2 component map).
 
 ## Safety
 

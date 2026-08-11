@@ -73,3 +73,21 @@ yet); rules 1–3 are satisfied because the analyzer never writes to a source
 image path, only reads it (`analysis/*.py` open files read-only); rules 4–7
 don't yet apply because there is no Lightroom integration yet — they become
 load-bearing starting Milestone 3.
+
+## Milestone-2 scope note
+
+Milestone 2 adds the local HTTP service (`src/lr_cleanup/api/`), so rule 8
+(no cloud calls) is no longer trivially true by omission — it's now
+enforced by `api/app.py::run()` refusing to start unless
+`settings.host` is a loopback address (`127.0.0.1`/`localhost`/`::1`),
+raising instead of silently binding wider. Every endpoint added
+(`/health`, photo registration, job creation/status/results, group detail)
+is either read-only or appends new `Photo`/`Analysis`/`AnalysisJob`/
+`DuplicateGroup`/`GroupMember` rows — none of them touch
+`existing_rating`/`existing_color_label`/`existing_pick_status` on write,
+only read them (as keeper-ranking tie-breaker inputs, per rules 5–7).
+`api/actions.py` — the only part of the HTTP contract that could eventually
+apply a user-confirmed change — does not exist yet (see
+`docs/architecture.md`'s Milestone-2 component map), so rules 4–7 remain
+satisfied by the same "the capability doesn't exist yet" argument as
+Milestone 1.

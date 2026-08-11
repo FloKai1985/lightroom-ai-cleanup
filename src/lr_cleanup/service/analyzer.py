@@ -1,10 +1,11 @@
 """Orchestrates the analysis pipeline: fingerprint caching, per-photo
 analysis, and duplicate/near-duplicate grouping + keeper ranking.
 
-This is the Milestone-1 stand-in for what will later be invoked by the
-FastAPI background job worker (Milestone 2). It contains no HTTP, no
-Lightroom SDK calls, and no MCP — only orchestration over the analysis
-functions and the repository.
+Used directly (synchronously) by the Milestone-1 CLI, and invoked by the
+FastAPI background job worker (Milestone 2, see api/jobs.py) via the
+`create_job`/`execute_job` split below. Contains no HTTP, no Lightroom SDK
+calls, and no MCP — only orchestration over the analysis functions and the
+repository.
 """
 
 from __future__ import annotations
@@ -95,15 +96,45 @@ class AnalyzerService:
             fingerprint=fingerprint,
         )
 
-    def run_job(self, photo_ids: list[int] | None = None) -> AnalysisJob:
+    def _resolve_photos(self, photo_ids: list[int] | None) -> list[Photo]:
+        if photo_ids is None:
+            return list(self.repository.iter_all_photos(batch_size=self.settings.batch_size))
+        return [p for pid in photo_ids if (p := self.repository.get_photo(pid)) is not None]
+
+    def create_job(self, photo_ids: list[int] | None = None) -> AnalysisJob:
+        """Persist a `PENDING` job row sized for `photo_ids` (or the whole
+        library) without doing any analysis work yet.
+
+        Split out from `run_job` so the API layer (Milestone 2) can return a
+        job id to the caller immediately and run `execute_job` in the
+        background, while the CLI can still call `run_job` for synchronous,
+        one-shot use.
+        """
+        total = len(photo_ids) if photo_ids is not None else self.repository.count_photos()
+        return self.repository.create_job(total_photos=total)
+
+    def run_job(
+        self, photo_ids: list[int] | None = None, regenerate_groups: bool = False
+    ) -> AnalysisJob:
         """Analyze photos (all registered photos, or a specific id list),
         reusing cached results when the fingerprint is unchanged."""
-        if photo_ids is None:
-            photos = list(self.repository.iter_all_photos(batch_size=self.settings.batch_size))
-        else:
-            photos = [p for pid in photo_ids if (p := self.repository.get_photo(pid)) is not None]
+        job = self.create_job(photo_ids)
+        return self.execute_job(job, photo_ids, regenerate_groups=regenerate_groups)
 
-        job = self.repository.create_job(total_photos=len(photos))
+    def execute_job(
+        self,
+        job: AnalysisJob,
+        photo_ids: list[int] | None = None,
+        regenerate_groups: bool = False,
+    ) -> AnalysisJob:
+        """Run the analysis loop for an already-created `job` row.
+
+        `photo_ids` must match whatever was used to size the job in
+        `create_job` — it is passed separately (rather than re-derived from
+        the job row) because the job schema doesn't persist the id list
+        (see docs/architecture.md's Incremental analysis note).
+        """
+        photos = self._resolve_photos(photo_ids)
         self.repository.set_job_status(job, JobStatus.RUNNING, started_at=datetime.now(UTC))
         log = logger.bind(job_id=job.id)
 
@@ -146,9 +177,13 @@ class AnalyzerService:
 
         status = JobStatus.COMPLETED if job.failed_photos < job.total_photos else JobStatus.FAILED
         self.repository.set_job_status(job, status, completed_at=datetime.now(UTC))
+
+        if regenerate_groups:
+            self.regenerate_groups(analysis_job_id=job.id)
+
         return job
 
-    def regenerate_groups(self) -> list[DuplicateGroup]:
+    def regenerate_groups(self, analysis_job_id: str | None = None) -> list[DuplicateGroup]:
         """Recompute all duplicate/near-duplicate/burst groups and keeper
         rankings from the currently-cached analyses. Idempotent: replaces
         the previous group set rather than accumulating stale groups."""
@@ -212,6 +247,10 @@ class AnalyzerService:
                 )
                 for r in ranked
             ]
-            created.append(self.repository.create_group(group_result.group_type, member_inputs))
+            created.append(
+                self.repository.create_group(
+                    group_result.group_type, member_inputs, analysis_job_id=analysis_job_id
+                )
+            )
 
         return created

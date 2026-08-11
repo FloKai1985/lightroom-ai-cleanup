@@ -37,6 +37,7 @@ dev = [
 
 [project.scripts]
 lr-cleanup = "lr_cleanup.cli:main"
+lr-cleanup-server = "lr_cleanup.api.app:run"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/lr_cleanup"]
@@ -54,6 +55,11 @@ extend-exclude = ["src/lr_cleanup/database/migrations/versions"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+# FastAPI's dependency injection idiom requires `Depends(...)` as an
+# argument default — that's the framework's intended usage, not a bug.
+"src/lr_cleanup/api/*.py" = ["B008"]
 
 [tool.mypy]
 python_version = "3.12"

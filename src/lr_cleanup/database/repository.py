@@ -232,6 +232,18 @@ class Repository:
             stmt = stmt.where(DuplicateGroup.group_type == group_type)
         return list(self.session.execute(stmt).scalars().all())
 
+    def list_groups_for_job(
+        self, job_id: str, limit: int = 200, offset: int = 0
+    ) -> list[DuplicateGroup]:
+        stmt = (
+            select(DuplicateGroup)
+            .where(DuplicateGroup.analysis_job_id == job_id)
+            .order_by(DuplicateGroup.id)
+            .limit(limit)
+            .offset(offset)
+        )
+        return list(self.session.execute(stmt).scalars().all())
+
     def list_blurry_photos(
         self, blur_confidence_min: float = 0.6, limit: int = 100, offset: int = 0
     ) -> list[Analysis]:
