@@ -97,17 +97,24 @@ runs (standard FastAPI/Starlette guidance). This required splitting
 job id) and `execute_job` (the actual analysis loop) — the CLI's `run_job`
 is now a thin convenience wrapper calling both in sequence.
 
-**Group-to-job association**: `regenerate_groups()` now accepts an
-`analysis_job_id` and tags every group it creates with it, so
-`GET /api/v1/jobs/{id}/results` can return exactly the groups that job's
-run produced. Since `regenerate_groups()` still does a full, idempotent
-recompute (clearing all previous groups first — see docs/algorithms.md),
-"the groups tagged with job X" and "the current full group set" are the
-same thing immediately after job X finishes; an older job's `results`
-response will report an empty group list once a newer job has re-tagged
-everything. This is a known MVP simplification, not a bug: incremental
-(non-full-recompute) grouping is a scale improvement to revisit alongside
-the "100,000+ photos" work below.
+**Group-to-job association**: `regenerate_groups()` accepts an
+`analysis_job_id` and tags every group it creates with it — useful
+provenance (`GroupResponse.generated_by_job_id`), but since it's still a
+full, idempotent recompute (clearing all previous groups first — see
+docs/algorithms.md), there is only ever **one** current group set, not a
+private snapshot per job. Filtering `GET /api/v1/jobs/{id}/results` by
+`DuplicateGroup.analysis_job_id == id` would make an older job's results go
+empty the moment a newer job regenerates groups again — indistinguishable
+from a data-loss bug, even though the older job's findings are still just
+as valid. Instead, `AnalysisJob.groups_regenerated` (set the moment a job
+actually runs regeneration) gates the response: if `True`, the endpoint
+returns the *current* full group set (`Repository.list_groups`), which
+reflects this job's run unless a later job has regenerated since; if
+`False`, the job never touched grouping and the list is always empty. See
+`tests/integration/test_api.py::test_older_job_results_stay_populated_after_a_later_regeneration`
+for the regression this guards against. Incremental (non-full-recompute)
+grouping remains a scale improvement to revisit alongside the
+"100,000+ photos" work below — that's a separate concern from this fix.
 
 **`api/actions.py` deliberately does not exist yet.** The brief's full HTTP
 API list includes `POST /api/v1/actions/prepare`, `GET
@@ -119,14 +126,24 @@ ahead of an actual caller (the MCP server) risks guessing at a shape that
 doesn't fit. The `PreparedAction`/`ActionLog` tables already exist
 (Milestone 1) and are unchanged.
 
-**SQLite pooling**: Milestone 1's CLI was single-threaded and sequential,
-so the default SQLite connection pooling was never an issue. The API
-serves each request on a worker thread and runs background tasks on
-another, so `database/session.py::make_engine` now pins `sqlite:///:memory:`
-engines to `StaticPool` (one shared connection across threads — a plain
-per-thread pool would silently give each thread its own empty in-memory
-database) and enables `PRAGMA foreign_keys=ON` / `PRAGMA journal_mode=WAL`
-on every SQLite connection for better concurrent read/write behavior.
+**SQLite pooling and locking**: Milestone 1's CLI was single-threaded and
+sequential, so SQLite's default connection pooling and locking behavior
+were never an issue. The API serves each request on a worker thread and
+runs background tasks on another, so `database/session.py::make_engine`
+now: pins `sqlite:///:memory:` engines to `StaticPool` (one shared
+connection across threads — a plain per-thread pool would silently give
+each thread its own empty in-memory database); enables
+`PRAGMA foreign_keys=ON` / `PRAGMA journal_mode=WAL` on every SQLite
+connection for better concurrent read/write behavior; and sets
+`PRAGMA busy_timeout=5000` so a second writer retries for up to 5s instead
+of immediately raising `database is locked` when it collides with another
+in-flight write (e.g. a background job committing progress while a request
+handler registers a photo). This meaningfully reduces lock contention at
+the concurrency levels this service actually sees (a handful of local
+requests/background jobs, not a multi-user server) — it is not a claim
+that SQLite is safe under heavy concurrent write load in general; a
+higher-throughput deployment would need a different database engine
+entirely, which is out of scope for a local single-user tool.
 
 ## Incremental analysis / scale
 

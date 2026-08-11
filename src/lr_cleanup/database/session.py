@@ -21,6 +21,7 @@ from sqlalchemy.pool import StaticPool
 from lr_cleanup.database.models import Base
 
 _MEMORY_URL = "sqlite:///:memory:"
+_BUSY_TIMEOUT_MS = 5_000
 
 
 def make_engine(database_url: str) -> Engine:
@@ -48,6 +49,13 @@ def make_engine(database_url: str) -> Engine:
             cursor = dbapi_connection.cursor()
             cursor.execute("PRAGMA foreign_keys=ON")
             cursor.execute("PRAGMA journal_mode=WAL")
+            # The API serves each request on a worker thread and runs
+            # background jobs on another (Milestone 2), so two connections
+            # can now legitimately want to write at the same time. Without
+            # a busy timeout, SQLite raises "database is locked" immediately
+            # instead of waiting for the other writer to finish; this makes
+            # a second writer retry for up to 5s before giving up.
+            cursor.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
             cursor.close()
 
     return engine

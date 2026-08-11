@@ -30,6 +30,11 @@ class GroupMemberResponse(BaseModel):
 class GroupResponse(BaseModel):
     group_id: int
     group_type: GroupType
+    generated_by_job_id: str | None
+    """The job that most recently (re)computed this group. Group
+    regeneration is a full, idempotent recompute (docs/algorithms.md), so
+    there is only ever one current group set — this is provenance, not a
+    per-job private snapshot."""
     members: list[GroupMemberResponse]
 
 
@@ -39,6 +44,12 @@ class JobResultsResponse(BaseModel):
     total_photos: int
     processed_photos: int
     failed_photos: int
+    groups_regenerated: bool
+    """Whether this job requested group regeneration. If `False`, `groups`
+    is always empty — this job never touched grouping. If `True`, `groups`
+    is the *current* group set, which reflects this job's run unless a
+    later job has regenerated groups again since (see
+    docs/architecture.md's Milestone-2 component map)."""
     groups: list[GroupResponse]
 
 
@@ -57,7 +68,12 @@ def _group_response(group: DuplicateGroup, repo: Repository) -> GroupResponse:
                 reasons=member.reasons,
             )
         )
-    return GroupResponse(group_id=group.id, group_type=group.group_type, members=members)
+    return GroupResponse(
+        group_id=group.id,
+        group_type=group.group_type,
+        generated_by_job_id=group.analysis_job_id,
+        members=members,
+    )
 
 
 @router.get("/jobs/{job_id}/results", response_model=JobResultsResponse)
@@ -71,13 +87,19 @@ def get_job_results(
     if job is None:
         raise HTTPException(status_code=404, detail="job not found")
 
-    groups = repo.list_groups_for_job(job_id, limit=limit, offset=offset)
+    groups: list[DuplicateGroup] = []
+    if job.groups_regenerated:
+        # There is only one current group set (full-recompute model) — see
+        # GroupResponse.generated_by_job_id's docstring.
+        groups = repo.list_groups(limit=limit, offset=offset)
+
     return JobResultsResponse(
         job_id=job.id,
         status=job.status,
         total_photos=job.total_photos,
         processed_photos=job.processed_photos,
         failed_photos=job.failed_photos,
+        groups_regenerated=job.groups_regenerated,
         groups=[_group_response(g, repo) for g in groups],
     )
 

@@ -161,6 +161,13 @@ class AnalysisJob(Base):
     failed_photos: Mapped[int] = mapped_column(Integer, default=0)
     error_summary: Mapped[str | None] = mapped_column(String)
 
+    groups_regenerated: Mapped[bool] = mapped_column(default=False)
+    """Whether this job actually ran group regeneration (vs. analysis-only).
+    Since regeneration is a full, idempotent recompute (docs/algorithms.md),
+    there is only ever one current group set — this flag tells the API
+    whether *this* job is the reason that current set looks the way it
+    does, without pretending each job owns a private snapshot."""
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

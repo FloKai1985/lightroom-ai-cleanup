@@ -180,6 +180,7 @@ class AnalyzerService:
 
         if regenerate_groups:
             self.regenerate_groups(analysis_job_id=job.id)
+            self.repository.mark_job_groups_regenerated(job)
 
         return job
 

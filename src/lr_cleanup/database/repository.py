@@ -183,6 +183,10 @@ class Repository:
             job.error_summary = error_summary
         self.session.flush()
 
+    def mark_job_groups_regenerated(self, job: AnalysisJob) -> None:
+        job.groups_regenerated = True
+        self.session.flush()
+
     # --- Groups ----------------------------------------------------------
 
     def create_group(
@@ -230,18 +234,6 @@ class Repository:
         stmt = select(DuplicateGroup).order_by(DuplicateGroup.id).limit(limit).offset(offset)
         if group_type is not None:
             stmt = stmt.where(DuplicateGroup.group_type == group_type)
-        return list(self.session.execute(stmt).scalars().all())
-
-    def list_groups_for_job(
-        self, job_id: str, limit: int = 200, offset: int = 0
-    ) -> list[DuplicateGroup]:
-        stmt = (
-            select(DuplicateGroup)
-            .where(DuplicateGroup.analysis_job_id == job_id)
-            .order_by(DuplicateGroup.id)
-            .limit(limit)
-            .offset(offset)
-        )
         return list(self.session.execute(stmt).scalars().all())
 
     def list_blurry_photos(

@@ -117,10 +117,12 @@ def test_job_results_produce_exact_duplicate_and_burst_groups(
 
     results = client.get(f"/api/v1/jobs/{job_id}/results").json()
     assert results["status"] == "completed"
+    assert results["groups_regenerated"] is True
     group_types = sorted(g["group_type"] for g in results["groups"])
     assert group_types == ["burst", "exact_duplicate"]
 
     burst_group = next(g for g in results["groups"] if g["group_type"] == "burst")
+    assert burst_group["generated_by_job_id"] == job_id
     assert len(burst_group["members"]) == 3
     ranks = sorted(m["rank"] for m in burst_group["members"])
     assert ranks == [1, 2, 3]
@@ -130,3 +132,56 @@ def test_job_results_produce_exact_duplicate_and_burst_groups(
     # The dedicated group-detail endpoint returns the same data.
     group_detail = client.get(f"/api/v1/groups/{burst_group['group_id']}").json()
     assert group_detail == burst_group
+
+
+def test_job_without_regeneration_reports_no_groups(client: TestClient, tmp_path: Path) -> None:
+    image = make_sharp_jpeg(tmp_path / "solo.jpg")
+    client.post("/api/v1/photos/register", json={"photos": [_register_payload(image, T0)]})
+
+    response = client.post("/api/v1/jobs", json={"regenerate_groups": False})
+    job_id = response.json()["job_id"]
+
+    results = client.get(f"/api/v1/jobs/{job_id}/results").json()
+    assert results["groups_regenerated"] is False
+    assert results["groups"] == []
+
+
+def test_older_job_results_stay_populated_after_a_later_regeneration(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """Regression test: group regeneration is a full, idempotent recompute
+    (docs/algorithms.md), so an older job's `analysis_job_id` tag on its
+    groups gets overwritten the moment a later job regenerates groups
+    again. Before the fix, `/jobs/{old_job}/results` would then report an
+    empty group list even though the duplicate pair it found is still
+    exactly as duplicate as before — indistinguishable from a data-loss
+    bug. The fix: the endpoint returns the *current* group set for any job
+    that requested regeneration, not a (nonexistent) private snapshot.
+    """
+    sharp_a = make_sharp_jpeg(tmp_path / "sharp_a.jpg")
+    sharp_b = make_sharp_jpeg(tmp_path / "sharp_b.jpg")
+    client.post(
+        "/api/v1/photos/register",
+        json={"photos": [_register_payload(sharp_a, T0), _register_payload(sharp_b, T0)]},
+    )
+
+    first_job_id = client.post("/api/v1/jobs", json={"regenerate_groups": True}).json()["job_id"]
+    first_results = client.get(f"/api/v1/jobs/{first_job_id}/results").json()
+    assert first_results["groups"], "sanity check: the first job should have found a group"
+
+    # A second, unrelated photo triggers another full group regeneration.
+    unrelated = make_blurred_jpeg(tmp_path / "unrelated.jpg")
+    client.post(
+        "/api/v1/photos/register",
+        json={"photos": [_register_payload(unrelated, T0 + timedelta(hours=5))]},
+    )
+    second_job_id = client.post("/api/v1/jobs", json={"regenerate_groups": True}).json()["job_id"]
+    assert second_job_id != first_job_id
+
+    # The first job's results must still show the (still-valid) duplicate
+    # group — not silently go empty just because a later job re-ran grouping.
+    stale_results = client.get(f"/api/v1/jobs/{first_job_id}/results").json()
+    assert stale_results["groups_regenerated"] is True
+    assert len(stale_results["groups"]) == len(first_results["groups"]) > 0
+    for group in stale_results["groups"]:
+        assert group["generated_by_job_id"] == second_job_id
