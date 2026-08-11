@@ -1,0 +1,22 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.venv/
+venv/
+.env
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Runtime data — never commit local library data or renditions
+*.db
+*.sqlite
+*.sqlite3
+.cache/
+data/
+renditions/
+
+.DS_Store
