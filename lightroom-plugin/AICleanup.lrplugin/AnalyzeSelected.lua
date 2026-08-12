@@ -42,7 +42,7 @@ local EXPORT_JPEG_QUALITY = 0.85 -- SDK's 0..1 scale; "quality approximately 85"
 local function isSupportedPhoto( photo )
 	-- Video isn't in scope for this analyzer (docs/algorithms.md covers
 	-- still-image sharpness/exposure/hashing only).
-	local ok, isVideo = pcall( function() return photo:getRawMetadata( 'isVideo' ) end )
+	local ok, isVideo = LrTasks.pcall( function() return photo:getRawMetadata( 'isVideo' ) end )
 	return ok and not isVideo
 end
 
@@ -51,7 +51,7 @@ end
 --- whole selection — mirrors the backend's own per-photo error handling
 --- (src/lr_cleanup/service/analyzer.py).
 local function readPhotoInfo( photo )
-	local ok, result = pcall( function()
+	local ok, result = LrTasks.pcall( function()
 		local path = photo:getRawMetadata( 'path' )
 		local attrs = LrFileUtils.fileAttributes( path )
 		return {
@@ -140,7 +140,7 @@ local function run( context )
 	-- Error handling: backend unavailable (see project brief's Error
 	-- handling section) — fail fast with a clear message rather than
 	-- letting every subsequent HTTP call raise a confusing error.
-	local healthOk = pcall( function() HttpClient.getJson( '/health' ) end )
+	local healthOk = LrTasks.pcall( function() HttpClient.getJson( '/health' ) end )
 	if not healthOk then
 		LrDialogs.message(
 			'AI Cleanup: backend unavailable',
@@ -213,7 +213,7 @@ local function run( context )
 	end
 
 	progressScope:setCaption( 'Registering photos...' )
-	local registerOk, registerResult = pcall( HttpClient.postJson, '/api/v1/photos/register', { photos = registerPhotos } )
+	local registerOk, registerResult = LrTasks.pcall( HttpClient.postJson, '/api/v1/photos/register', { photos = registerPhotos } )
 	if not registerOk then
 		LrDialogs.message( 'AI Cleanup: registration failed', tostring( registerResult ), 'critical' )
 		return
@@ -237,7 +237,7 @@ local function run( context )
 	end
 
 	progressScope:setCaption( 'Starting analysis job...' )
-	local jobOk, job = pcall( HttpClient.postJson, '/api/v1/jobs', { photo_ids = photoIds, regenerate_groups = true } )
+	local jobOk, job = LrTasks.pcall( HttpClient.postJson, '/api/v1/jobs', { photo_ids = photoIds, regenerate_groups = true } )
 	if not jobOk then
 		LrDialogs.message( 'AI Cleanup: could not start analysis job', tostring( job ), 'critical' )
 		return
@@ -255,7 +255,7 @@ local function run( context )
 		end
 		LrTasks.sleep( 1 )
 		pollCount = pollCount + 1
-		local pollOk, current = pcall( HttpClient.getJson, '/api/v1/jobs/' .. job.job_id )
+		local pollOk, current = LrTasks.pcall( HttpClient.getJson, '/api/v1/jobs/' .. job.job_id )
 		if not pollOk then
 			LrDialogs.message( 'AI Cleanup: lost contact with backend while waiting', tostring( current ), 'critical' )
 			return
@@ -274,7 +274,7 @@ local function run( context )
 	end
 
 	progressScope:setCaption( 'Fetching results...' )
-	local resultsOk, jobResults = pcall( HttpClient.getJson, '/api/v1/jobs/' .. job.job_id .. '/results' )
+	local resultsOk, jobResults = LrTasks.pcall( HttpClient.getJson, '/api/v1/jobs/' .. job.job_id .. '/results' )
 	if not resultsOk then
 		LrDialogs.message( 'AI Cleanup: could not fetch job results', tostring( jobResults ), 'critical' )
 		return
@@ -286,7 +286,7 @@ local function run( context )
 	local photoRecords = {}
 	for _, info in ipairs( photoInfos ) do
 		if info.photoId then
-			local analysisOk, analysis = pcall( HttpClient.getJson, '/api/v1/photos/' .. info.photoId .. '/analysis' )
+			local analysisOk, analysis = LrTasks.pcall( HttpClient.getJson, '/api/v1/photos/' .. info.photoId .. '/analysis' )
 			if analysisOk then
 				photoRecords[ #photoRecords + 1 ] = { photo = info.photo, photoId = info.photoId, analysis = analysis }
 			else

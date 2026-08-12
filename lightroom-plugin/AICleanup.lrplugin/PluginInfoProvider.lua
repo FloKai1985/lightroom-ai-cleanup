@@ -61,7 +61,7 @@ local function sectionsForTopOfDialog( f, _ )
 					action = function()
 						LrTasks.startAsyncTask( function()
 							LrFunctionContext.callWithContext( 'AICleanup.TestConnection', function()
-								local ok, result = pcall( HttpClient.getJson, '/health' )
+								local ok, result = LrTasks.pcall( HttpClient.getJson, '/health' )
 								if ok then
 									LrDialogs.message(
 										'AI Cleanup',

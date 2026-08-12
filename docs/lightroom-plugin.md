@@ -192,6 +192,33 @@ sources rather than trusted from memory.
 official `flickr.lrdevplugin/FlickrAPI.lua`, used for scoping
 cleanup/cancellation around a task.
 
+**`LrTasks.pcall`, not Lua's built-in `pcall`, for anything that yields —
+CONFIRMED BY REAL-WORLD FAILURE, not just reading.** Lightroom's Lua
+runtime is 5.1 (see the SDK version pin note below), and standard Lua 5.1
+`pcall` cannot yield across its own C-call boundary. `LrHttp.get`/`.post`
+yield internally (that's how Lightroom keeps the UI responsive during
+network I/O — see "HTTP calls from Lightroom Lua" above), so wrapping one
+in plain `pcall(HttpClient.getJson, ...)` fails at runtime with
+`Yielding is not allowed within a C or metamethod call` — this is not a
+theoretical concern, it's the literal error a real Lightroom install threw
+when this plugin's `PluginInfoProvider.lua` "Test Connection" button and
+`AnalyzeSelected.lua`'s HTTP calls were first exercised end-to-end. The
+fix: `LrTasks.pcall(func, ...)` (same call signature as standard `pcall`)
+is the SDK's yield-safe equivalent, "permitting yield() calls within it"
+per the API Reference — this was already recorded in this document's
+`LrTasks` research table before the bug shipped, but not connected to the
+fact that every `HttpClient` call site needed it. Every `pcall(` in this
+plugin now reads `LrTasks.pcall(` — including the two call sites
+(`isSupportedPhoto`, `readPhotoInfo` in `AnalyzeSelected.lua`) that wrap
+`photo:getRawMetadata`/`LrFileUtils.fileAttributes` rather than HTTP: those
+aren't documented as yielding, but there is no known downside to
+`LrTasks.pcall` over plain `pcall` for a non-yielding function, so every
+`pcall` in the plugin was standardized rather than reasoning per-call-site
+about which ones truly need it. **Lesson for future SDK calls**: knowing
+an API exists (as documented here) isn't the same as applying it
+everywhere it's needed — this doc is a research record, not a substitute
+for exercising the actual code path in real Lightroom.
+
 ## Architectural constraint confirmed by cross-reference
 
 Lightroom Lua plugins have no socket/listen API — they can only make

@@ -332,8 +332,41 @@ diff in isolation. Findings, in order of severity:
   left implicit.** See docs/lightroom-plugin.md's "Remaining caveats" —
   `checkResponse` assumes `LrHttp` returns a nil body on connection
   failure, which wasn't explicitly confirmed (only the success-path return
-  shape was). Every call site's `pcall` makes this safe either way; the
-  gap is now written down instead of silently assumed correct.
+  shape was). Every call site's error-protection wrapper makes this safe
+  either way; the gap is now written down instead of silently assumed
+  correct.
+
+## First real-world Lightroom test: a bug this environment couldn't catch
+
+No Lightroom Classic install was available while Milestones 3–4 and the
+refactor pass above were built, so the Lua plugin's verification ceiling
+was: correct syntax, correct SDK call shapes (cross-checked against real
+sample plugins), and pure-logic unit tests run outside Lightroom
+(`Json.lua`, `ReviewResults.lua`'s grouping-reduction logic). None of that
+can exercise Lightroom's actual Lua 5.1 runtime semantics.
+
+The first real run inside Lightroom Classic failed immediately with
+`Yielding is not allowed within a C or metamethod call` — every `pcall(...)`
+wrapping an `HttpClient` call (and, defensively, the two wrapping plain
+metadata reads) used Lua's built-in `pcall`, which cannot yield across its
+own C-call boundary in Lua 5.1. `LrHttp.get`/`.post` yield internally by
+design (that's what keeps Lightroom's UI responsive during network I/O),
+so every HTTP call the plugin made was guaranteed to hit this. Fixed by
+switching every `pcall` in the plugin to `LrTasks.pcall` — the SDK's
+yield-safe equivalent, same call signature, already recorded (but not
+connected to this requirement) in docs/lightroom-plugin.md's `LrTasks`
+research. Full details and the reasoning for standardizing every call
+site rather than reasoning about each one individually are in that doc's
+"Asynchronous Lightroom tasks" section.
+
+This is worth naming plainly: the SDK research process in this project
+(cross-referencing real sample plugins, verifying signatures) caught
+*wrong* assumptions before they shipped, as documented throughout this
+file and docs/lightroom-plugin.md — but it cannot substitute for running
+the code in the actual target environment, and didn't catch this. Treat
+everything under `lightroom-plugin/` as verified-by-reading until it's
+been exercised in a real Lightroom Classic install; this was the first
+time that happened.
 
 ## Incremental analysis / scale
 
