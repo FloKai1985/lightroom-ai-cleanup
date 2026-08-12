@@ -1,146 +1,237 @@
-# Lightroom Classic plugin — SDK research (pre-Milestone-3)
+# Lightroom Classic plugin — verified SDK reference
 
-**Status: research/design only.** No Lua has been written yet — that is
-Milestone 3. This document exists because the project brief requires SDK
-capabilities to be verified against official Adobe documentation *before*
-implementation starts, and requires unclear APIs to be flagged rather than
-guessed at. Everything below is either (a) long-standing, stable Lightroom
-Classic SDK surface referenced consistently across Adobe's SDK guide and
-sample plugins, marked **CONFIRMED (verify exact signature before coding)**,
-or (b) a nuance whose precise behavior needs to be checked against the
-current SDK PDF/API reference at Adobe's developer site before Milestone 3
-lands, marked **UNRESOLVED**.
+**Status: implemented (Milestone 3).** Milestone 1 shipped this document as
+a memory-based research pass with items marked `UNRESOLVED`. Before writing
+any Lua, that pass was redone against real sources — Adobe's own official
+sample plugins (mirrored on GitHub, byte-identical Adobe copyright headers)
+and several mature, actively-maintained third-party plugins, including at
+least one other Lightroom-to-local-HTTP-service bridge. Every API used by
+this plugin is listed below as **CONFIRMED**, with the source that
+confirmed it. Anything not confirmed to this standard is listed under
+**Remaining caveats** and handled defensively in code rather than guessed
+at.
 
-Do not treat "CONFIRMED" here as "safe to copy into code verbatim" — it
-means "this call/module is a real, stable part of the SDK," not "this exact
-argument order is correct." Re-check the current API reference
-(`Lightroom Classic SDK Guide.pdf` / `API Reference.pdf` from Adobe's
-developer downloads) while implementing Milestone 3, since parameter order
-and optional-field names are exactly where hand-written docs drift from
-memory.
+Do not treat this document as a substitute for the official
+`Lightroom Classic SDK Guide` / `API Reference` — it's a record of what was
+specifically checked for this plugin's needs, not a general reference.
 
-## Accessing currently selected photos
+## Sources consulted
 
-**CONFIRMED**: `LrApplication.activeCatalog()` returns the active
-`LrCatalog`. `catalog:getTargetPhotos()` returns the current target/selected
-photos as a table of `LrPhoto`; `catalog:getTargetPhoto()` returns the
-single most-selected photo. This is the standard way plugins read the
-Library/Filmstrip selection.
+- **Official Adobe SDK samples** (`helloworld`, `custommetadatasample`,
+  `ftp_upload`, `flickr`, `mymetadata`), mirrored at
+  [github.com/Jaid/lightroom-sdk-8-examples](https://github.com/Jaid/lightroom-sdk-8-examples)
+  — these carry Adobe's original copyright headers and are the closest
+  thing to primary-source documentation available outside the SDK zip
+  itself.
+- **API Reference (Lightroom SDK docs mirror)**:
+  [archive.stecman.co.nz/files/docs/lightroom-sdk/API-Reference](https://archive.stecman.co.nz/files/docs/lightroom-sdk/API-Reference/)
+  — a long-standing community mirror of Adobe's HTML API reference,
+  cross-checked against the official samples above wherever they overlap
+  (they agree everywhere checked).
+- **gesteves/lightroom-alt-text-plugin** — a real, working plugin that
+  exports a resized JPEG rendition and calls an external HTTP AI API
+  (Claude) with the result, architecturally close to this project's own
+  render→analyze→annotate flow.
+- **Automaat/lightroom-mcp** — a real, working Lightroom-to-MCP bridge
+  plugin (a close relative of this project's own end goal), useful for
+  cross-checking export settings and confirming the "Lua plugins cannot
+  host a server, only make outbound calls" architectural constraint.
+- **DaveBurns/rc_Exportant** — a mature, long-maintained export utility
+  plugin, used to cross-check `LR_jpeg_quality`'s value range.
 
-## Reading photo metadata
+## Accessing currently selected photos — CONFIRMED
 
-**CONFIRMED**: `LrPhoto:getRawMetadata(name)` for machine-readable fields
-(path, dimensions, GPS, capture date, virtual-copy flag, UUID, etc.) and
-`LrPhoto:getFormattedMetadata(name)` for display-formatted strings.
+`LrApplication.activeCatalog()` returns the active `LrCatalog`.
+`catalog:getTargetPhotos()` returns an array of the currently
+selected/target `LrPhoto` objects; `catalog:getTargetPhoto()` returns the
+single most-selected one, or `nil`. *(API Reference — LrCatalog)*
 
-**UNRESOLVED**: the exact raw-metadata key names we depend on —
-`rating`, `pickStatus`, `colorNameForLabel` (or `label`), `isVirtualCopy`,
-`fileSize`, `dateTimeOriginal` / `dateTimeOriginalISO8601`,
-`path`. These need to be checked one-by-one against the current API
-reference's `LrPhoto` metadata key table before `Metadata.lua` /
-`AnalyzeSelected.lua` are written, since a wrong key name fails silently
-(returns `nil`) rather than erroring.
+## Reading photo metadata — CONFIRMED
 
-## Rendering/exporting temporary JPEG renditions
+`photo:getRawMetadata(key)` for machine-readable fields;
+`photo:getFormattedMetadata(key)` for display-formatted strings. Both
+"must be called from within a task started using `LrTasks`."
+*(API Reference — LrPhoto)*
 
-**CONFIRMED**: `LrExportSession` is the supported mechanism for producing
-controlled-format renditions (as opposed to
-`LrPhoto:requestJpegThumbnail`, which returns Lightroom's cached preview at
-whatever size/quality Lightroom chose — not suitable here because we need a
-guaranteed sRGB, fixed-long-edge, fixed-quality JPEG for consistent
-analysis). An export session is constructed with the photos to export and
-an export-settings table, then iterated via `exportSession:renditions()` to
-get a filesystem path per photo once rendering completes.
+Exact raw-metadata keys this plugin depends on (all confirmed present in
+the official key table):
 
-**UNRESOLVED**: exact export-setting keys for our target
-(`JPEG, sRGB, 1600px longest edge, quality ≈ 0.85`) —
-e.g. `LR_format`, `LR_export_colorSpace`, `LR_size_doConstrain`,
-`LR_size_maxWidth`/`LR_size_maxHeight`, `LR_jpeg_quality`,
-`LR_export_destinationType`, `LR_export_destinationPathPrefix`. These names
-are well-established in Adobe's own sample export plugins but must be
-copied from the current SDK sample (`Export Filter` / `FTP Upload` samples
-ship with the SDK) rather than typed from memory when Milestone 3 starts.
+| Key | Used for |
+|---|---|
+| `path` | `Photo.original_path` |
+| `uuid` | stable cross-session `Photo.lightroom_id` |
+| `isVirtualCopy` | `Photo.is_virtual_copy` |
+| `rating` | `Photo.existing_rating` |
+| `pickStatus` | `Photo.existing_pick_status` (`1`=picked, `0`=unset, `-1`=rejected) |
+| `colorNameForLabel` | `Photo.existing_color_label` |
+| `width` / `height` | `Photo.width` / `Photo.height` |
+| `dateTimeOriginalISO8601` | `Photo.capture_time` (ISO 8601 string, parses directly) |
+| `fileFormat` | used to skip formats the analyzer can't handle |
+| `isVideo` | used to skip video files (out of scope — see docs/algorithms.md) |
 
-## Defining plugin metadata
+`photo.localIdentifier` (direct property, not via `getRawMetadata`) is a
+numeric per-catalog id — confirmed via `Automaat/lightroom-mcp`'s
+`PhotoLookup.lua`, which also confirms **there is no
+`LrCatalog:findPhotoByLocalIdentifier`** (a negative result worth
+recording so it isn't reinvented later). This plugin uses `localIdentifier`
+only for cache-subfolder naming, never as `lightroom_id` — `uuid` is the
+persistent identifier and is what's sent to the API.
 
-**CONFIRMED**: a plugin declares custom metadata via
-`Info.lua`'s `LrMetadataProvider` entry pointing at a metadata-definition
-Lua file (planned: `Metadata.lua`), which returns a table including a field
-list (`metadataFieldsForPhotos`) with `id`, `title`, `dataType`, etc. Reads
-use `LrPhoto:getPropertyForPlugin(_PLUGIN, fieldId)`; writes use
-`LrPhoto:setPropertyForPlugin(_PLUGIN, fieldId, value)`.
+## File size / modification time — CONFIRMED (fills an M1 gap)
 
-**UNRESOLVED**: whether `setPropertyForPlugin` requires being called inside
-a `catalog:withWriteAccessDo(...)` transaction (the mechanism required for
-built-in-field writes like rating/label/pick) or has its own
-write-access rules (some SDK versions document a
-`catalog:withPrivateWriteAccessDo` variant for plugin-private data). This
-directly affects `Metadata.lua`'s implementation and must be confirmed
-against the current SDK guide's "Metadata" chapter before writing any code
-that calls `setPropertyForPlugin`.
+`getRawMetadata` has no file-mtime key. `LrFileUtils.fileAttributes(path)`
+returns a table with `fileSize`, `fileCreationDate`, and
+`fileModificationDate` — this is what `Photo.file_size`/`Photo.file_mtime`
+are actually sourced from, applied to `photo:getRawMetadata('path')`.
+*(API Reference — LrFileUtils)*
 
-Planned custom fields (names only — data types/write path pending the
-above): `AI Cleanup Status`, `AI Sharpness Score`, `AI Blur Confidence`,
-`AI Duplicate Type`, `AI Duplicate Group`, `AI Similarity Group`,
-`AI Keeper Score`, `AI Recommendation`, `AI Analysis Version`.
+## Rendering temporary JPEG renditions — CONFIRMED
 
-## Creating/managing collections
+`LrExportSession{ photosToExport = {...}, exportSettings = {...} }`
+constructs a session; `exportSession:renditions()` iterates it; each
+`rendition:waitForRender()` returns `success, path` for that photo's
+exported file. This exact pattern — construction, iteration, and
+`waitForRender()` — is used as-is in `gesteves/lightroom-alt-text-plugin`.
 
-**CONFIRMED**: `catalog:createCollectionSet(name, parent, returnExisting)`
-and `catalog:createCollection(name, parent, returnExisting)` exist and
-support a "return the existing one instead of erroring/duplicating" mode,
-which is exactly what idempotent collection-tree creation (running the
-plugin twice must not create duplicate trees) needs. Both must be called
-inside `catalog:withWriteAccessDo(...)`.
+Export setting keys (cross-confirmed across three independent real
+plugins — `Automaat/lightroom-mcp`, `gesteves/lightroom-alt-text-plugin`,
+`DaveBurns/rc_Exportant` — which agree on every key they share):
 
-**UNRESOLVED**: exact parameter order/name for the "return existing"
-argument in the current SDK version, and whether collection-set nesting
-(`AI Photo Cleanup` → `01 – Recommended Keepers`, etc.) requires the child
-collection call to pass the set as `parent` by object reference or by name.
-Confirm against the current API reference before `ReviewResults.lua` is
-written; until then, `prepare_review_collections` (Milestone 4 MCP tool) is
-designed only around the *shape* (idempotent create-if-missing), not a
-concrete call.
+```lua
+{
+  LR_export_destinationType = 'specificFolder',
+  LR_export_destinationPathPrefix = cacheDir,
+  LR_export_useSubfolder = false,
+  LR_format = 'JPEG',
+  LR_export_colorSpace = 'sRGB',       -- exact string confirmed via Automaat/lightroom-mcp
+  LR_jpeg_quality = 0.85,              -- 0..1 float, NOT 0-100 — confirmed via rc_Exportant
+                                        -- ("< .7", "< 1") and alt-text-plugin ("0.8")
+  LR_size_doConstrain = true,
+  LR_size_maxWidth = 1600,
+  LR_size_maxHeight = 1600,
+  LR_size_resizeType = 'longEdge',
+  LR_size_units = 'pixels',
+  LR_minimizeEmbeddedMetadata = true,
+}
+```
 
-## HTTP calls from Lightroom Lua
+The brief's "quality approximately 85" reads as Lightroom's Export dialog's
+0–100 UI scale; the SDK field is 0..1, so `0.85` is the equivalent value.
 
-**CONFIRMED**: `LrHttp.get(url, headers, timeoutSecs)` and
-`LrHttp.post(url, body, headers, method, timeoutSecs)` are the SDK's
-synchronous HTTP primitives, and being synchronous they must run inside an
-async task (see below) so they don't block Lightroom's UI thread. This is
-the transport `HttpClient.lua` will wrap for calling the local FastAPI
-service on `127.0.0.1`.
+## Defining plugin metadata — CONFIRMED
 
-**UNRESOLVED**: exact parameter order/defaults for `LrHttp.post` across SDK
-versions (header table shape, default method). Confirm before
-`HttpClient.lua` is written.
+`Info.lua` sets `LrMetadataProvider = 'Metadata.lua'`; that file returns a
+table with `metadataFieldsForPhotos` (array of `{id, title, dataType, ...}`)
+and `schemaVersion`. Confirmed field shape directly from Adobe's official
+`custommetadatasample.lrdevplugin/CustomMetadataDefinition.lua`. Reads use
+`photo:getPropertyForPlugin(plugin, fieldId, optVersion, noThrow)`; writes
+use `photo:setPropertyForPlugin(plugin, fieldId, value, optVersion)`.
 
-## Write-access requirements for catalog changes
+**Write-access gate — CONFIRMED, resolves the M1 `UNRESOLVED` item**:
+`catalog:withPrivateWriteAccessDo(func, timeoutParams)` is the correct
+gate for plugin-custom-field writes ("Provides write access to custom
+fields defined by your plug-in" — API Reference, LrCatalog), distinct from
+`catalog:withWriteAccessDo(actionName, func, timeoutParams)` used for
+built-in, undo-visible fields (rating/label/pick/collections). The official
+sample's own comment on `updateFromEarlierSchemaVersion` confirms the
+pairing: "This function is called from within a
+`catalog:withPrivateWriteAccessDo` block."
 
-**CONFIRMED**: any write to catalog-tracked, undo-visible state (star
-rating, color label, pick/reject flag, collection membership) must happen
-inside `catalog:withWriteAccessDo("undo step name", function(context) ...
-end)`. This module will never be called by anything except an explicit,
-user-confirmed apply step — see `docs/safety.md`. Since this project's
-default behavior never writes ratings/labels/flags at all, this call path
-is not expected to be exercised until (and unless) a future, separately
-reviewed feature adds a user-confirmed "apply AI recommendation as a
-flag/rating" action.
+**Remaining caveat — numeric field type.** No source consulted
+enumerates a numeric/float `dataType` for `metadataFieldsForPhotos` (Jeffrey
+Friedl's widely-cited plugin-metadata writeup shows only `string` and
+`enum`). Rather than gamble on an unconfirmed type, every custom field this
+plugin defines — including `AI Sharpness Score`, `AI Blur Confidence`,
+`AI Keeper Score` — uses `dataType = 'string'`, storing the formatted
+number as text (e.g. `"0.91"`). This is a deliberate, conservative choice,
+not an oversight — see `Metadata.lua`.
 
-## Asynchronous Lightroom tasks
+Fields actually defined (all `dataType = 'string'` per the caveat above,
+`id`s are camelCase, `title`s are the human-readable names from the brief):
+`aiCleanupStatus`, `aiSharpnessScore`, `aiBlurConfidence`,
+`aiDuplicateType`, `aiDuplicateGroup`, `aiSimilarityGroup`,
+`aiKeeperScore`, `aiRecommendation`, `aiAnalysisVersion`.
 
-**CONFIRMED**: `LrTasks.startAsyncTask(function() ... end)` (or with a name
-string) runs code on a Lightroom-managed coroutine off the main UI thread —
-required for anything that blocks (HTTP calls, write-access transactions,
-export sessions) so Lightroom's UI stays responsive. `LrFunctionContext` is
-the companion module for scoping cleanup handlers (e.g.
-`LrFunctionContext.callWithContext`) around such tasks.
+## Creating/managing collections — CONFIRMED
 
-## Summary for Milestone 3 planning
+`catalog:createCollectionSet(name, parent, canReturnPrior)` and
+`catalog:createCollection(name, parent, canReturnPrior)` — the third
+argument, confirmed by name and behavior ("True to return an existing
+[collection/set] with this name" — API Reference, LrCatalog), is exactly
+the idempotency mechanism the brief requires ("running it twice must not
+create duplicate collection trees"). Both require
+`catalog:withWriteAccessDo(...)` (collection membership is a built-in,
+undo-visible catalog operation — never plugin-private data).
 
-Nothing above blocks starting Milestone 3, but before writing
-`AnalyzeSelected.lua`, `Metadata.lua`, and `ReviewResults.lua`, pull the
-current `Lightroom Classic SDK Guide` and `API Reference` from Adobe's
-developer site and resolve each `UNRESOLVED` item above against it. Where
-the real signature differs from what's assumed here, this document should
-be updated alongside the code, not left stale.
+## HTTP calls from Lightroom Lua — CONFIRMED
+
+```lua
+LrHttp.get(url, headers, timeout)          -- returns response, headers
+LrHttp.post(url, postBody, headers, method, timeout, totalSize) -- returns response, headers
+```
+
+`headers` is an array of `{ field = "...", value = "..." }` tables, not a
+plain string-keyed map (API Reference — LrHttp, confirmed by real usage in
+the flickr sample). Both functions "can only be called within an
+asynchronous task" (API Reference — LrHttp), i.e. inside
+`LrTasks.startAsyncTask` or a `processRenderedPhotos`-style implicit task.
+
+## Asynchronous Lightroom tasks — CONFIRMED (corrects an M1 assumption)
+
+```lua
+LrTasks.startAsyncTask( func, optName )
+```
+
+Note the parameter **order**: the function comes first, the optional debug
+name second (API Reference — LrTasks). Milestone 1's doc had this
+unconfirmed and risked guessing `(name, func)`, the opposite order — worth
+recording as a concrete example of why this pass was redone against real
+sources rather than trusted from memory.
+
+`LrFunctionContext.callWithContext( name, func )` — confirmed via the
+official `flickr.lrdevplugin/FlickrAPI.lua`, used for scoping
+cleanup/cancellation around a task.
+
+## Architectural constraint confirmed by cross-reference
+
+Lightroom Lua plugins have no socket/listen API — they can only make
+*outbound* `LrHttp` calls. `Automaat/lightroom-mcp` (a real Lightroom↔MCP
+bridge) has no HTTP-server module of its own for exactly this reason. This
+confirms the direction fixed since `docs/architecture.md` Milestone 1 was
+correct and is not just a design preference: **Python must be the HTTP
+server; the plugin can only be a client of it.**
+
+## Remaining caveats (deliberately not guessed at)
+
+- **`LR_size_maxWidth` vs `LR_size_maxHeight` for `resizeType='longEdge'`.**
+  The one real example found (`Automaat/lightroom-mcp`) sets both to the
+  same value defensively when either is requested; no source confirms
+  whether Lightroom actually needs both or ignores the shorter-edge one in
+  `longEdge` mode. This plugin follows the same defensive pattern (sets
+  both to `1600`) rather than assuming one is redundant.
+- **Custom metadata numeric `dataType`.** See above — treated as
+  unconfirmed; every custom field uses `dataType = 'string'`.
+- **SDK version pin.** `LrSdkVersion = 6.0` / `LrSdkMinimumVersion = 6.0` in
+  `Info.lua` — chosen because every API this plugin uses is confirmed
+  present since long-ago SDK versions (the samples above range from SDK
+  3.0 to 8.0 and use the same calls), and a low pin maximizes compatibility
+  with older Lightroom Classic installations. Current Lightroom Classic
+  ships SDK 14.x, so this is not a ceiling on what's usable, only a floor.
+
+## What Milestone 3 deliberately does not build
+
+- **`ApplyActions.lua` does not exist yet.** It's the file that would let a
+  user-confirmed `PreparedAction` get applied to Lightroom (a rating/flag
+  change, per `docs/safety.md`'s two-phase action model), but the HTTP
+  endpoints it would call (`POST /api/v1/actions/*`) don't exist yet either
+  — see `docs/architecture.md`'s Milestone-2 component map. Building the
+  Lua side of a contract that doesn't exist on the Python side would mean
+  guessing at both ends at once.
+- **No persistent background/polling loop** (the `LrInitPlugin` +
+  `LrForceInitPlugin` + long-running-task pattern `Automaat/lightroom-mcp`
+  uses for its always-on bridge). The brief's Milestone 5 explicitly asks
+  for this to be investigated *after* Milestones 1–4 are stable, as a
+  separate mechanism, "not part of the core analyzer." Milestone 3's
+  `AnalyzeSelected.lua` is a one-shot menu command: select photos, run it,
+  wait for it to finish. That satisfies the vertical slice the brief asks
+  for without reaching into Milestone 5's scope.

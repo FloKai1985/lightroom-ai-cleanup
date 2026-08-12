@@ -17,6 +17,19 @@ from lr_cleanup.database.repository import Repository
 router = APIRouter(prefix="/api/v1", tags=["results"])
 
 
+class PhotoAnalysisResponse(BaseModel):
+    photo_id: int
+    original_path: str
+    file_hash: str
+    perceptual_hash: str
+    sharpness_score: float
+    blur_confidence: float
+    exposure_score: float
+    highlight_clipping: float
+    shadow_clipping: float
+    analysis_version: int
+
+
 class GroupMemberResponse(BaseModel):
     photo_id: int
     original_path: str
@@ -110,3 +123,40 @@ def get_group(group_id: int, repo: Repository = Depends(get_repository)) -> Grou
     if group is None:
         raise HTTPException(status_code=404, detail="group not found")
     return _group_response(group, repo)
+
+
+@router.get("/photos/{photo_id}/analysis", response_model=PhotoAnalysisResponse)
+def get_photo_analysis(
+    photo_id: int, repo: Repository = Depends(get_repository)
+) -> PhotoAnalysisResponse:
+    """The latest analysis for a single photo — sharpness/exposure/hash data
+    that doesn't depend on the photo belonging to any duplicate group.
+
+    Added for Milestone 3: the Lightroom plugin writes `AI Sharpness Score`
+    / `AI Blur Confidence` custom metadata for every analyzed photo, not
+    just ones that ended up in a group, and the job-results endpoint only
+    ever returns grouped photos. The plugin already knows which photo ids
+    it registered, so it calls this once per photo after a job completes
+    rather than the API needing to persist a job→photo_id list anywhere
+    (see docs/architecture.md's Milestone-2 component map for why that
+    list isn't tracked).
+    """
+    photo = repo.get_photo(photo_id)
+    if photo is None:
+        raise HTTPException(status_code=404, detail="photo not found")
+    analysis = repo.get_analysis(photo_id)
+    if analysis is None:
+        raise HTTPException(status_code=404, detail="photo has not been analyzed yet")
+
+    return PhotoAnalysisResponse(
+        photo_id=photo.id,
+        original_path=photo.original_path,
+        file_hash=analysis.file_hash,
+        perceptual_hash=analysis.perceptual_hash,
+        sharpness_score=analysis.sharpness_score,
+        blur_confidence=analysis.blur_confidence,
+        exposure_score=analysis.exposure_score,
+        highlight_clipping=analysis.highlight_clipping,
+        shadow_clipping=analysis.shadow_clipping,
+        analysis_version=analysis.analysis_version,
+    )

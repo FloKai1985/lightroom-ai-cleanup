@@ -50,13 +50,16 @@ contract the plugin calls into.
   analysis pipeline and writes results via the repository.
 - `src/lr_cleanup/cli.py` — Milestone-1 CLI entry point for running analysis
   without the HTTP/plugin layers.
-- `src/lr_cleanup/api/` — FastAPI app (Milestone 2+, not yet implemented).
+- `src/lr_cleanup/api/` — FastAPI app (Milestone 2). No `actions.py` yet —
+  see `docs/architecture.md`'s Milestone-2 component map for why.
 - `src/lr_cleanup/mcp_server/` — MCP tools (Milestone 4+, not yet
   implemented).
-- `lightroom-plugin/AICleanup.lrplugin/` — Lua plugin (Milestone 3+, not yet
-  implemented). Any SDK call used there must be verified against the official
-  Lightroom Classic SDK docs — see `docs/lightroom-plugin.md` for what is
-  confirmed vs. still marked `UNRESOLVED SDK CALL`.
+- `lightroom-plugin/AICleanup.lrplugin/` — Lua plugin (Milestone 3). Every
+  SDK call it makes is cited in `docs/lightroom-plugin.md` against an
+  official Adobe sample or a real working third-party plugin — read that
+  doc, and its "Remaining caveats" section, before adding a new SDK call
+  rather than guessing at one. No `ApplyActions.lua` yet, matching
+  `api/actions.py` not existing.
 
 ## Working style expected in this repo
 

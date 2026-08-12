@@ -33,17 +33,18 @@ has mature, well-tested libraries for it (OpenCV, NumPy, ImageHash).
 | Milestone | Scope | Status |
 |---|---|---|
 | 1 | Standalone Python analyzer: config, DB, hashing, pHash, sharpness, exposure, grouping, keeper ranking, CLI, tests | **Implemented** |
-| 2 | FastAPI service: health, jobs, background processing, results | **Implemented** (this change) |
-| 3 | Lightroom Lua plugin: selection → renditions → job → metadata/collections | Not started |
+| 2 | FastAPI service: health, jobs, background processing, results | **Implemented** |
+| 3 | Lightroom Lua plugin: selection → renditions → job → metadata/collections | **Implemented** (this change) |
 | 4 | MCP server: read tools + action preparation | Not started |
 | 5 | Optional MCP → Lightroom command polling | Not started, out of core scope |
 
-Directories `src/lr_cleanup/mcp_server/` and
-`lightroom-plugin/AICleanup.lrplugin/` are intentionally not populated yet.
+Directory `src/lr_cleanup/mcp_server/` is intentionally not populated yet.
 Creating empty package stubs for code that doesn't exist yet would misstate
-progress; they will be added when their milestone starts. `src/lr_cleanup/api/`
-now exists but deliberately has no `actions.py` — see "Milestone-2 component
-map" below for why.
+progress; it will be added when Milestone 4 starts. `src/lr_cleanup/api/`
+deliberately has no `actions.py`, and
+`lightroom-plugin/AICleanup.lrplugin/` deliberately has no
+`ApplyActions.lua` — see "Milestone-2 component map" and "Milestone-3
+component map" below for why.
 
 ## Milestone-1 component map
 
@@ -144,6 +145,61 @@ requests/background jobs, not a multi-user server) — it is not a claim
 that SQLite is safe under heavy concurrent write load in general; a
 higher-throughput deployment would need a different database engine
 entirely, which is out of scope for a local single-user tool.
+
+## Milestone-3 component map
+
+```text
+Info.lua                 plugin manifest: menu item, metadata provider, plugin-manager panel
+  │
+  ├─ Metadata.lua          LrMetadataProvider: field definitions (AI Sharpness Score, ...)
+  ├─ PluginInfoProvider.lua Plug-in Manager panel: backend URL + "Test Connection"
+  │
+  └─ AnalyzeSelected.lua   Library > Plug-in Extras menu command — the vertical slice:
+       │                     select photos -> export renditions -> register -> create job
+       │                     -> poll -> read results -> apply
+       │
+       ├─ HttpClient.lua    LrHttp + Json wrapper for talking to the FastAPI service
+       ├─ Json.lua           vendored pure-Lua JSON codec (SDK has no native JSON)
+       └─ ReviewResults.lua  writes AI plugin metadata + files photos into review collections
+```
+
+Every non-trivial SDK call in these files is confirmed against real
+sources (official Adobe samples, or real working third-party plugins) —
+see `docs/lightroom-plugin.md` for the full research trail and citations.
+Two corrections that research caught before they became bugs: menu items
+under Library > Plug-in Extras go through `LrLibraryMenuItems`, not
+`LrExportMenuItems` (which is for the File menu); and
+`LrTasks.startAsyncTask` takes `(func, name)`, not `(name, func)`.
+
+**`GET /api/v1/photos/{photo_id}/analysis` was added during this
+milestone**, not planned in Milestone 2. The job-results endpoint only
+returns photos that ended up in a duplicate/near-duplicate group, but the
+plugin needs to write `AI Sharpness Score`/`AI Blur Confidence` metadata
+for *every* analyzed photo, including ones that never grouped with
+anything. Rather than teach the backend to persist which photo ids
+belonged to which job (a schema change with the same "which snapshot is
+this" complexity as the groups-staleness issue fixed earlier), the plugin
+already knows its own photo ids from the register step and just asks for
+each one directly.
+
+**Cache directory**: the plugin exports renditions into
+`<system temp>/AICleanupCache/run-<timestamp>/`, one subfolder per
+invocation, and deletes it after a successful run — the brief's "the
+architecture must allow cache cleanup" requirement, satisfied at the
+point that's actually able to know the files are no longer needed (the
+Python side never renders anything itself, so it has no cache of its own
+to clean up here; `render_cache`/`cache_dir` in `config.py` remains
+reserved for a future Python-side cache, unused today).
+
+**Numeric plugin metadata fields are stored as strings.** No source
+consulted while building this confirmed a numeric/float `dataType` for
+`metadataFieldsForPhotos` — see `docs/lightroom-plugin.md`'s "Remaining
+caveats". `AI Sharpness Score` etc. are `dataType = 'string'`, formatted
+to 4 decimal places by `ReviewResults.lua`.
+
+**`ApplyActions.lua` does not exist**, matching `api/actions.py` not
+existing — same reasoning as Milestone 2's action-preparation deferral,
+now also true on the Lua side.
 
 ## Incremental analysis / scale
 

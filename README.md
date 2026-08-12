@@ -12,13 +12,16 @@ mandatory constraint list.
 
 ## Status
 
-**Milestones 1 (standalone analyzer) and 2 (local FastAPI service) are
-implemented.** There is no Lightroom plugin or MCP server yet — see
-[`docs/architecture.md`](docs/architecture.md) for the milestone plan. What
-exists today: a CLI *and* a local-only HTTP API that both register photos,
-run the analysis pipeline (sharpness, exposure, hashing) as background
-jobs, group exact/near-duplicates, and produce an explainable keeper
-ranking — all stored in a local SQLite database.
+**Milestones 1–3 are implemented**: the standalone analyzer, the local
+FastAPI service, and the Lightroom Classic Lua plugin. There is no MCP
+server yet — see [`docs/architecture.md`](docs/architecture.md) for the
+milestone plan. What exists today: a CLI, a local-only HTTP API, and a
+Lightroom plugin that together select photos in Lightroom, render
+previews, run the analysis pipeline (sharpness, exposure, hashing) as a
+background job, group exact/near-duplicates, produce an explainable
+keeper ranking, and write the results back into Lightroom as custom
+metadata and review collections — all stored in a local SQLite database,
+never in Lightroom's own catalog file.
 
 ## Architecture
 
@@ -164,12 +167,42 @@ an isolated in-memory SQLite database per test (see
 [`tests/integration/conftest.py`](tests/integration/conftest.py)) — nothing
 touches `data/lr_cleanup.db`.
 
-## Installing the Lightroom plugin / connecting an MCP client
+## Installing the Lightroom plugin
 
-Not applicable yet — the Lua plugin (Milestone 3) and MCP server
-(Milestone 4) haven't been implemented. See
-[`docs/lightroom-plugin.md`](docs/lightroom-plugin.md) for the SDK research
-already done in preparation for Milestone 3.
+The backend must be running first (`scripts/run-server.sh`). Then:
+
+```bash
+scripts/install-plugin.sh
+```
+
+This checks the plugin folder looks valid and reveals it in Finder; there
+is no scriptable way to actually register a plugin with Lightroom
+Classic — Adobe's only supported mechanism is the UI:
+
+1. In Lightroom Classic: **File > Plug-in Manager…**
+2. Click **Add**, then select `lightroom-plugin/AICleanup.lrplugin`
+   (the absolute path is printed by the script above).
+3. Select one or more photos in the Library, then run
+   **Library > Plug-in Extras > AI Cleanup: Analyze Selected Photos**.
+
+The Plug-in Manager's "AI Cleanup" section lets you change the backend URL
+(default `http://127.0.0.1:8765`) and test the connection. Every SDK call
+the plugin makes is cited against an official Adobe sample or a real,
+working third-party plugin in
+[`docs/lightroom-plugin.md`](docs/lightroom-plugin.md) — read that doc
+before modifying anything under `lightroom-plugin/`.
+
+**What it does**: exports a temporary sRGB JPEG (1600px long edge) per
+selected photo, registers the photos and previews with the backend, runs
+an analysis job, polls for completion, then writes `AI Sharpness Score` /
+`AI Blur Confidence` / etc. as custom Lightroom metadata and files photos
+into an `AI Photo Cleanup` collection set (`01 – Recommended Keepers`
+through `06 – Processed`). It never touches star ratings, color labels,
+pick flags, or original files — see [`docs/safety.md`](docs/safety.md).
+
+## Connecting an MCP client
+
+Not applicable yet — the MCP server (Milestone 4) hasn't been implemented.
 
 ## Repository layout
 
@@ -184,19 +217,27 @@ lightroom-ai-cleanup/
 │   ├── cli.py                   Milestone-1 CLI entry point (`lr-cleanup`)
 │   ├── api/                     FastAPI app (`lr-cleanup-server`): app.py, deps.py, jobs.py, results.py
 │   └── mcp_server/               MCP tools — Milestone 4, not yet implemented
-├── lightroom-plugin/            Lua plugin — Milestone 3, not yet implemented
+├── lightroom-plugin/AICleanup.lrplugin/
+│   ├── Info.lua                 plugin manifest: menu item, metadata provider, manager panel
+│   ├── AnalyzeSelected.lua       the vertical slice: select -> export -> register -> job -> apply
+│   ├── ReviewResults.lua         writes AI metadata + files photos into review collections
+│   ├── Metadata.lua              custom metadata field definitions
+│   ├── HttpClient.lua            LrHttp + JSON wrapper for the backend
+│   ├── Json.lua                  vendored pure-Lua JSON codec (SDK has none natively)
+│   └── PluginInfoProvider.lua    Plug-in Manager panel: backend URL + connection test
 ├── tests/
 │   ├── unit/                    pytest, synthetic fixtures only
 │   ├── integration/              FastAPI TestClient against an isolated in-memory DB
 │   └── fixtures/                in-process synthetic image generators (no binary test assets)
-└── scripts/                     run-server.sh (install-plugin.sh added with Milestone 3)
+└── scripts/                     run-server.sh, install-plugin.sh
 ```
 
-`mcp_server/` and `lightroom-plugin/AICleanup.lrplugin/` are intentionally
-not populated yet — see [`docs/architecture.md`](docs/architecture.md) for
-the milestone-by-milestone plan and why empty stubs weren't created ahead
-of the code that needs them. `api/` deliberately has no `actions.py` yet
-either, for the same reason (see that doc's Milestone-2 component map).
+`mcp_server/` is intentionally not populated yet — see
+[`docs/architecture.md`](docs/architecture.md) for the milestone-by-milestone
+plan and why an empty stub wasn't created ahead of the code that needs it.
+`api/actions.py` and `lightroom-plugin/AICleanup.lrplugin/ApplyActions.lua`
+deliberately don't exist yet either, for the same reason (see that doc's
+Milestone-2 and Milestone-3 component maps).
 
 ## Safety
 

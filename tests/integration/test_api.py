@@ -58,6 +58,44 @@ def test_group_not_found_returns_404(client: TestClient) -> None:
     assert client.get("/api/v1/groups/999999").status_code == 404
 
 
+def test_photo_analysis_not_found_returns_404(client: TestClient) -> None:
+    assert client.get("/api/v1/photos/999999/analysis").status_code == 404
+
+
+def test_photo_analysis_before_any_job_returns_404(client: TestClient, tmp_path: Path) -> None:
+    image = make_sharp_jpeg(tmp_path / "solo.jpg")
+    response = client.post(
+        "/api/v1/photos/register", json={"photos": [_register_payload(image, T0)]}
+    )
+    photo_id = response.json()["registered"][0]["photo_id"]
+    assert client.get(f"/api/v1/photos/{photo_id}/analysis").status_code == 404
+
+
+def test_photo_analysis_available_after_job_even_without_a_group(
+    client: TestClient, tmp_path: Path
+) -> None:
+    # A single, unpaired photo never joins a duplicate/near-duplicate group,
+    # but the plugin still needs its sharpness/exposure data to write AI
+    # metadata (docs/lightroom-plugin.md) — this is exactly the gap
+    # GET /api/v1/photos/{id}/analysis fills.
+    image = make_sharp_jpeg(tmp_path / "solo.jpg")
+    register = client.post(
+        "/api/v1/photos/register", json={"photos": [_register_payload(image, T0)]}
+    )
+    photo_id = register.json()["registered"][0]["photo_id"]
+
+    job_id = client.post("/api/v1/jobs", json={"regenerate_groups": True}).json()["job_id"]
+    assert client.get(f"/api/v1/jobs/{job_id}").json()["status"] == "completed"
+
+    analysis = client.get(f"/api/v1/photos/{photo_id}/analysis")
+    assert analysis.status_code == 200
+    body = analysis.json()
+    assert body["photo_id"] == photo_id
+    assert 0.0 <= body["sharpness_score"] <= 1.0
+    assert 0.0 <= body["blur_confidence"] <= 1.0
+    assert len(body["file_hash"]) == 64
+
+
 def test_create_job_analyzes_registered_photo(client: TestClient, tmp_path: Path) -> None:
     image = make_sharp_jpeg(tmp_path / "sharp.jpg")
     client.post("/api/v1/photos/register", json={"photos": [_register_payload(image, T0)]})

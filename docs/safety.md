@@ -91,3 +91,38 @@ apply a user-confirmed change — does not exist yet (see
 `docs/architecture.md`'s Milestone-2 component map), so rules 4–7 remain
 satisfied by the same "the capability doesn't exist yet" argument as
 Milestone 1.
+
+## Milestone-3 scope note
+
+Milestone 3 adds the Lightroom Lua plugin, which is the first code in this
+project that can actually touch a live Lightroom catalog — this is where
+rules 4–7 stop being true "by omission" and start being enforced by what
+the plugin does and doesn't call:
+
+- **Rule 4 (no direct catalog DB access)**: the plugin never opens the
+  `.lrcat` file; every read goes through `photo:getRawMetadata` /
+  `getFormattedMetadata`, every write through the SDK's `LrCatalog` gates
+  (`withPrivateWriteAccessDo` for plugin metadata,
+  `withWriteAccessDo` for collections) — see `docs/lightroom-plugin.md`.
+- **Rules 5–7 (never overwrite rating/label/pick)**: `AnalyzeSelected.lua`
+  and `ReviewResults.lua` only ever *read* `rating`, `pickStatus`, and
+  `colorNameForLabel` (sent to the backend as keeper-ranking tie-breaker
+  input, per `docs/algorithms.md`) and only ever *write* the plugin's own
+  custom fields (`aiCleanupStatus`, `aiSharpnessScore`, etc., defined in
+  `Metadata.lua`) and collection membership. There is no code path in this
+  plugin that calls `photo:setRawMetadata` or anything else that could
+  touch a built-in rating/label/pick field. `ApplyActions.lua` — the file
+  that would eventually let a user-confirmed action touch one of those
+  fields — deliberately does not exist yet (see
+  `docs/architecture.md`'s Milestone-3 component map).
+- **Rules 1–3 (never delete/move/modify originals)**: the plugin only ever
+  reads `photo:getRawMetadata('path')` to locate the original; every write
+  operation (`LrExportSession`) targets a dedicated temp cache directory,
+  never the original's path, and the only `LrFileUtils.delete` call in the
+  plugin targets that same cache directory after a successful run — never
+  an original.
+- **Rules 8–9 (no cloud/no external AI)**: the plugin's only outbound HTTP
+  calls (`HttpClient.lua`) go to `HttpClient.baseUrl()`, which is
+  user-editable via the Plug-in Manager but documented there as never
+  belonging on anything but `127.0.0.1` — there is no default or
+  fallback URL that points anywhere else.
