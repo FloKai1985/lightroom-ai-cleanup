@@ -27,16 +27,18 @@ non-negotiable product requirements, not suggestions.
 ## Architecture
 
 ```
-Lightroom Classic --Lua plugin--> Python service (FastAPI) --> SQLite
-                                         |                        ^
-                                         v                        |
-                                   Analysis Engine          MCP Server <- MCP client
+Lightroom Classic --Lua plugin--\                    /-- Claude / MCP client
+                                  >-- FastAPI service <
+                     MCP server -/     (+ SQLite)      \
 ```
 
 The Lua plugin owns all Lightroom interaction (selection, renditions,
-metadata, collections). Python owns analysis, persistence, ranking, HTTP API,
-and MCP. Python never talks to Lightroom directly — only through the HTTP
-contract the plugin calls into.
+metadata, collections). Python's FastAPI service owns analysis,
+persistence, ranking, and the HTTP API. The MCP server is a separate
+process — a peer of the Lua plugin, not code living inside the FastAPI
+process — that translates that same HTTP API into MCP tools. Neither the
+plugin nor the MCP server ever gets direct database access; both only ever
+talk to the one process that owns SQLite, over `127.0.0.1` HTTP.
 
 ## Repository layout
 
@@ -46,20 +48,25 @@ contract the plugin calls into.
 - `src/lr_cleanup/database/` — SQLAlchemy models, repository, Alembic
   migrations. This is the single source of truth on disk; it is never the
   Lightroom catalog.
-- `src/lr_cleanup/service/` — orchestration: batches photos through the
-  analysis pipeline and writes results via the repository.
-- `src/lr_cleanup/cli.py` — Milestone-1 CLI entry point for running analysis
+- `src/lr_cleanup/service/` — orchestration: `analyzer.py` batches photos
+  through the analysis pipeline; `action_queue.py` implements
+  prepare/list/confirm/undo for the action queue (never "apply").
+- `src/lr_cleanup/cli.py` — standalone CLI entry point for running analysis
   without the HTTP/plugin layers.
-- `src/lr_cleanup/api/` — FastAPI app (Milestone 2). No `actions.py` yet —
-  see `docs/architecture.md`'s Milestone-2 component map for why.
-- `src/lr_cleanup/mcp_server/` — MCP tools (Milestone 4+, not yet
-  implemented).
-- `lightroom-plugin/AICleanup.lrplugin/` — Lua plugin (Milestone 3). Every
-  SDK call it makes is cited in `docs/lightroom-plugin.md` against an
-  official Adobe sample or a real working third-party plugin — read that
-  doc, and its "Remaining caveats" section, before adding a new SDK call
-  rather than guessing at one. No `ApplyActions.lua` yet, matching
-  `api/actions.py` not existing.
+- `src/lr_cleanup/api/` — FastAPI app: `jobs.py`, `results.py`,
+  `actions.py`. No **apply** endpoint yet — see `docs/architecture.md`'s
+  Milestone-4 component map for why.
+- `src/lr_cleanup/mcp_server/` — MCP server (`lr-cleanup-mcp`):
+  `server.py` builds it, `tools.py` defines the 10 tools, `client.py` is
+  the HTTP client tools use to reach the FastAPI service (no direct DB
+  access — see `docs/architecture.md`'s Milestone-4 component map for why
+  this is a separate process rather than sharing the FastAPI process).
+- `lightroom-plugin/AICleanup.lrplugin/` — Lua plugin. Every SDK call it
+  makes is cited in `docs/lightroom-plugin.md` against an official Adobe
+  sample or a real working third-party plugin — read that doc, and its
+  "Remaining caveats" section, before adding a new SDK call rather than
+  guessing at one. No `ApplyActions.lua` yet, matching the API's missing
+  apply endpoint.
 
 ## Working style expected in this repo
 

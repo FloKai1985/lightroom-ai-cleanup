@@ -33,11 +33,15 @@ dev = [
     "pytest-asyncio>=0.24",
     "ruff>=0.7",
     "mypy>=1.13",
+    # [cli] pulls in `mcp dev` (MCP Inspector) / `mcp run` / `mcp install` —
+    # the official MCP dev/test tooling, not needed at runtime.
+    "mcp[cli]>=1.2",
 ]
 
 [project.scripts]
 lr-cleanup = "lr_cleanup.cli:main"
 lr-cleanup-server = "lr_cleanup.api.app:run"
+lr-cleanup-mcp = "lr_cleanup.mcp_server.server:run"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/lr_cleanup"]

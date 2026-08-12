@@ -7,6 +7,8 @@ deliberately not part of Milestone 2; see docs/architecture.md.
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
@@ -66,6 +68,31 @@ class JobResultsResponse(BaseModel):
     groups: list[GroupResponse]
 
 
+class BlurryPhotoResponse(BaseModel):
+    photo_id: int
+    original_path: str
+    sharpness_score: float
+    blur_confidence: float
+
+
+class LatestJobSummary(BaseModel):
+    job_id: str
+    status: JobStatus
+    created_at: datetime
+    total_photos: int
+    processed_photos: int
+    failed_photos: int
+
+
+class SummaryResponse(BaseModel):
+    total_photos: int
+    analyzed_photos: int
+    blurry_photos: int
+    blur_confidence_threshold: float
+    groups_by_type: dict[str, int]
+    latest_job: LatestJobSummary | None
+
+
 def _group_response(group: DuplicateGroup, repo: Repository) -> GroupResponse:
     members = []
     for member in sorted(group.members, key=lambda m: m.rank):
@@ -117,12 +144,74 @@ def get_job_results(
     )
 
 
+@router.get("/groups", response_model=list[GroupResponse])
+def list_groups(
+    group_type: list[GroupType] | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    repo: Repository = Depends(get_repository),
+) -> list[GroupResponse]:
+    groups = repo.list_groups(group_types=group_type, limit=limit, offset=offset)
+    return [_group_response(g, repo) for g in groups]
+
+
 @router.get("/groups/{group_id}", response_model=GroupResponse)
 def get_group(group_id: int, repo: Repository = Depends(get_repository)) -> GroupResponse:
     group = repo.get_group(group_id)
     if group is None:
         raise HTTPException(status_code=404, detail="group not found")
     return _group_response(group, repo)
+
+
+@router.get("/photos/blurry", response_model=list[BlurryPhotoResponse])
+def list_blurry_photos(
+    min_confidence: float = Query(default=0.5, ge=0.0, le=1.0),
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    repo: Repository = Depends(get_repository),
+) -> list[BlurryPhotoResponse]:
+    analyses = repo.list_blurry_photos(
+        blur_confidence_min=min_confidence, limit=limit, offset=offset
+    )
+    results: list[BlurryPhotoResponse] = []
+    for analysis in analyses:
+        photo = repo.get_photo(analysis.photo_id)
+        results.append(
+            BlurryPhotoResponse(
+                photo_id=analysis.photo_id,
+                original_path=photo.original_path if photo is not None else "",
+                sharpness_score=analysis.sharpness_score,
+                blur_confidence=analysis.blur_confidence,
+            )
+        )
+    return results
+
+
+@router.get("/summary", response_model=SummaryResponse)
+def get_summary(
+    blur_confidence_min: float = Query(default=0.5, ge=0.0, le=1.0),
+    repo: Repository = Depends(get_repository),
+) -> SummaryResponse:
+    groups_by_type = {gt.value: count for gt, count in repo.count_groups_by_type().items()}
+    latest_job = repo.get_latest_job()
+
+    return SummaryResponse(
+        total_photos=repo.count_photos(),
+        analyzed_photos=repo.count_analyzed_photos(),
+        blurry_photos=repo.count_blurry_photos(blur_confidence_min),
+        blur_confidence_threshold=blur_confidence_min,
+        groups_by_type=groups_by_type,
+        latest_job=LatestJobSummary(
+            job_id=latest_job.id,
+            status=latest_job.status,
+            created_at=latest_job.created_at,
+            total_photos=latest_job.total_photos,
+            processed_photos=latest_job.processed_photos,
+            failed_photos=latest_job.failed_photos,
+        )
+        if latest_job is not None
+        else None,
+    )
 
 
 @router.get("/photos/{photo_id}/analysis", response_model=PhotoAnalysisResponse)

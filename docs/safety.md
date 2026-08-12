@@ -86,11 +86,12 @@ is either read-only or appends new `Photo`/`Analysis`/`AnalysisJob`/
 `DuplicateGroup`/`GroupMember` rows — none of them touch
 `existing_rating`/`existing_color_label`/`existing_pick_status` on write,
 only read them (as keeper-ranking tie-breaker inputs, per rules 5–7).
-`api/actions.py` — the only part of the HTTP contract that could eventually
-apply a user-confirmed change — does not exist yet (see
-`docs/architecture.md`'s Milestone-2 component map), so rules 4–7 remain
-satisfied by the same "the capability doesn't exist yet" argument as
-Milestone 1.
+`api/actions.py` — the part of the HTTP contract that could eventually
+apply a user-confirmed change — did not exist yet as of this milestone
+(see `docs/architecture.md`'s Milestone-2 component map), so rules 4–7
+remained satisfied by the same "the capability doesn't exist yet" argument
+as Milestone 1. It exists starting Milestone 4 — see that scope note below
+for why rules 4–7 are still satisfied even with it built.
 
 ## Milestone-3 scope note
 
@@ -126,3 +127,34 @@ the plugin does and doesn't call:
   user-editable via the Plug-in Manager but documented there as never
   belonging on anything but `127.0.0.1` — there is no default or
   fallback URL that points anywhere else.
+
+## Milestone-4 scope note
+
+Milestone 4 adds the MCP server and, with it, `api/actions.py` — the part
+of the HTTP contract capable of staging a change. Two things keep rules
+4–9 satisfied even though action preparation is now real (not just
+schema):
+
+- **No MCP tool can reach "confirm" or "apply".** `prepare_review_collections`
+  and `prepare_markings` create `PENDING` rows; `undo_action_batch` only
+  cancels a not-yet-applied batch. `POST /api/v1/actions/{batch_id}/confirm`
+  exists on the HTTP API (completing the contract Milestone 2 deferred) but
+  is not wired to any MCP tool — reaching `CONFIRMED` requires a direct API
+  call, deliberately outside MCP's reach. There is still no "apply" endpoint
+  or tool anywhere in the codebase; a `CONFIRMED` batch cannot currently
+  cause anything to happen in Lightroom, because nothing polls for it (see
+  `docs/architecture.md`'s Milestone-4 component map). This is what "No
+  destructive MCP tool may exist" means concretely here — not that every
+  action-queue state transition is literally destructive, but that MCP's
+  reach stops one full human decision short of anything that could be.
+- **`prepare_markings` cannot stage a rating/label/pick change even if
+  asked.** Its `marking` parameter is validated against a fixed allow-list
+  (`flagged_for_review`, `confirmed_keeper`, `confirmed_redundant` —
+  `mcp_server/tools.py`) and always writes to the plugin's own
+  `aiCleanupStatus` custom field, never a built-in Lightroom field. There
+  is no parameter on any tool that accepts an arbitrary Lightroom field
+  name or value.
+- **The MCP server has no database or Lightroom access of its own** — see
+  `docs/architecture.md`'s Milestone-4 component map. Every tool is an HTTP
+  client of the same `127.0.0.1`-only service the plugin uses; there is no
+  additional attack surface or bypass path introduced by adding MCP.

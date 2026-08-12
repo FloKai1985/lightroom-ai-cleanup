@@ -11,7 +11,7 @@ from __future__ import annotations
 from datetime import datetime
 
 import structlog
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -142,6 +142,16 @@ def create_job(
         payload.regenerate_groups,
     )
     return _job_response(job)
+
+
+@router.get("/jobs", response_model=list[JobResponse])
+def list_jobs(
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    repo: Repository = Depends(get_repository),
+) -> list[JobResponse]:
+    jobs = repo.list_jobs(limit=limit, offset=offset)
+    return [_job_response(j) for j in jobs]
 
 
 @router.get("/jobs/{job_id}", response_model=JobResponse)

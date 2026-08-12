@@ -3,26 +3,31 @@
 ## System overview
 
 ```text
-Lightroom Classic
-      │
-      │ Lua Plugin (lightroom-plugin/AICleanup.lrplugin)
-      │ localhost HTTP, JSON
-      ▼
-Python Local Service (src/lr_cleanup)
-      │
-      ├── Analysis Engine   (analysis/)   — hashing, sharpness, exposure, grouping, ranking
-      ├── SQLite            (database/)   — durable state, never the Lightroom catalog
-      └── MCP Server        (mcp_server/) — read + "prepare action" tools for an MCP client
-              │
-              ▼
-        Claude / MCP Client
+Lightroom Classic                              Claude / MCP Client
+      │                                                │
+      │ Lua Plugin                                     │ stdio (lr-cleanup-mcp)
+      │ (lightroom-plugin/AICleanup.lrplugin)          │
+      │                                          MCP Server (mcp_server/)
+      │                                                │
+      │              localhost HTTP, JSON              │ localhost HTTP, JSON
+      └───────────────────────┬─────────────────────────┘
+                               ▼
+                    Python Local Service (src/lr_cleanup/api)
+                               │
+                    ├── Analysis Engine   (analysis/)   — hashing, sharpness, exposure, grouping, ranking
+                    └── SQLite            (database/)   — durable state, never the Lightroom catalog
 ```
 
 The Lightroom plugin owns everything that requires the Lightroom SDK:
 selection, metadata reads, rendition export, plugin-metadata writes,
-collection management. The Python service owns everything computational:
-image analysis, persistence, ranking, the HTTP contract, and MCP. Python
-never talks to Lightroom directly; the plugin never does image analysis.
+collection management. The Python FastAPI service owns everything
+computational and stateful: image analysis, persistence, ranking, and the
+HTTP contract. The MCP server owns translating that HTTP contract into MCP
+tools for an MCP client — it is a peer of the Lightroom plugin, not a
+component living inside the FastAPI process (see "Milestone-4 component
+map" below for why this differs from earlier drafts of this diagram).
+Python never talks to Lightroom directly; the plugin never does image
+analysis; the MCP server never touches SQLite directly.
 
 This split exists because (a) only the Lightroom SDK can safely touch the
 catalog, and (b) Lua is a poor fit for numeric image analysis, while Python
@@ -34,17 +39,14 @@ has mature, well-tested libraries for it (OpenCV, NumPy, ImageHash).
 |---|---|---|
 | 1 | Standalone Python analyzer: config, DB, hashing, pHash, sharpness, exposure, grouping, keeper ranking, CLI, tests | **Implemented** |
 | 2 | FastAPI service: health, jobs, background processing, results | **Implemented** |
-| 3 | Lightroom Lua plugin: selection → renditions → job → metadata/collections | **Implemented** (this change) |
-| 4 | MCP server: read tools + action preparation | Not started |
+| 3 | Lightroom Lua plugin: selection → renditions → job → metadata/collections | **Implemented** |
+| 4 | MCP server: read tools + action preparation | **Implemented** (this change) |
 | 5 | Optional MCP → Lightroom command polling | Not started, out of core scope |
 
-Directory `src/lr_cleanup/mcp_server/` is intentionally not populated yet.
-Creating empty package stubs for code that doesn't exist yet would misstate
-progress; it will be added when Milestone 4 starts. `src/lr_cleanup/api/`
-deliberately has no `actions.py`, and
-`lightroom-plugin/AICleanup.lrplugin/` deliberately has no
-`ApplyActions.lua` — see "Milestone-2 component map" and "Milestone-3
-component map" below for why.
+`api/actions.py` now exists (prepare/pending/confirm/undo — see the
+Milestone-4 component map below) but still has no **apply** endpoint, and
+`lightroom-plugin/AICleanup.lrplugin/` still has no `ApplyActions.lua` —
+actually applying a confirmed action to Lightroom remains future work.
 
 ## Milestone-1 component map
 
@@ -117,15 +119,16 @@ for the regression this guards against. Incremental (non-full-recompute)
 grouping remains a scale improvement to revisit alongside the
 "100,000+ photos" work below — that's a separate concern from this fix.
 
-**`api/actions.py` deliberately does not exist yet.** The brief's full HTTP
+**`api/actions.py` did not exist as of Milestone 2.** The brief's full HTTP
 API list includes `POST /api/v1/actions/prepare`, `GET
 /api/v1/actions/pending`, and the `confirm`/`undo` endpoints, but Milestone
-2's stated deliverables are health/jobs/background-processing/results only.
-Action preparation is the mechanism that will eventually let MCP (Milestone
-4) stage a change for human confirmation (docs/safety.md) — building it
-ahead of an actual caller (the MCP server) risks guessing at a shape that
-doesn't fit. The `PreparedAction`/`ActionLog` tables already exist
-(Milestone 1) and are unchanged.
+2's stated deliverables were health/jobs/background-processing/results
+only. Action preparation is the mechanism that lets MCP (Milestone 4)
+stage a change for human confirmation (docs/safety.md) — building it ahead
+of an actual caller risked guessing at a shape that didn't fit, so it
+waited until Milestone 4 actually needed it. See "Milestone-4 component
+map" below for what was built and why `confirm`/`apply` still aren't
+reachable from MCP.
 
 **SQLite pooling and locking**: Milestone 1's CLI was single-threaded and
 sequential, so SQLite's default connection pooling and locking behavior
@@ -197,9 +200,86 @@ consulted while building this confirmed a numeric/float `dataType` for
 caveats". `AI Sharpness Score` etc. are `dataType = 'string'`, formatted
 to 4 decimal places by `ReviewResults.lua`.
 
-**`ApplyActions.lua` does not exist**, matching `api/actions.py` not
-existing — same reasoning as Milestone 2's action-preparation deferral,
-now also true on the Lua side.
+**`ApplyActions.lua` still does not exist.** `api/actions.py` now exists
+(Milestone 4), so a `PreparedAction` batch can reach `CONFIRMED` — but
+nothing polls for confirmed batches and applies them to Lightroom yet.
+That's the one piece of the full pipeline
+(`MCP -> PreparedAction -> SQLite -> Lightroom plugin -> user confirmation
+-> apply`) still unbuilt; see the Milestone-4 component map below.
+
+## Milestone-4 component map
+
+```text
+mcp_server/server.py     builds the MCPServer, registers tools, `run()` for stdio
+  │
+  ├─ mcp_server/client.py  BackendClient — httpx wrapper, the ONLY thing
+  │                        tools talk to (no direct DB/repository access)
+  └─ mcp_server/tools.py    10 tool functions + their Pydantic response models
+       │
+       ▼  HTTP, same 127.0.0.1 contract the Lightroom plugin uses
+api/app.py  (unchanged)
+  ├─ api/actions.py (new)   POST .../prepare, GET .../pending,
+  │                          POST .../{batch_id}/confirm, POST .../{batch_id}/undo
+  ├─ api/jobs.py (+GET /api/v1/jobs list)
+  └─ api/results.py (+GET /api/v1/summary, /api/v1/photos/blurry, /api/v1/groups list)
+       │
+       ▼
+service/action_queue.py (new)   prepare / list_pending / confirm / undo
+       │
+       ▼
+database/repository.py (+action-queue CRUD, +count_*/list_jobs/list_groups(group_types=...))
+```
+
+**The MCP server is its own process, not a component inside the FastAPI
+process** — despite how the original architecture sketch drew it. Every
+tool calls the FastAPI service over HTTP through `BackendClient`, exactly
+how the Lightroom plugin calls it. This was a deliberate choice made
+while implementing, not a downgrade from some richer original plan: giving
+MCP direct repository/SQLite access would mean two different processes
+(uvicorn's workers and the MCP stdio process) opening the same SQLite file
+independently, on top of the request-thread/background-task pooling
+already handled in Milestone 2 — reusing the one HTTP contract that
+already exists, that the plugin already proves out, and that already has
+`StaticPool`/`WAL`/`busy_timeout` handling is simpler and has no new
+concurrency surface to reason about.
+
+**Verifying the MCP SDK, not guessing.** `mcp==2.0.0` (installed per
+Milestone 1's dependency list) does not have `mcp.server.fastmcp.FastMCP`
+— that class, and the whole `mcp.server.fastmcp` module, is absent from
+this version; tutorials referencing it are written against an older SDK.
+The current equivalent, confirmed by inspecting the installed package
+directly (`from mcp.server.mcpserver import MCPServer`), is
+`MCPServer`, registered via the same `@server.tool(...)` decorator
+pattern. This was checked with a real Python REPL against the actually
+installed package — not assumed from training data — per the project
+brief's explicit instruction to verify the current MCP SDK before use.
+
+**Every tool is read-only or "prepare"; none is "confirm" or "apply".**
+`prepare_review_collections` and `prepare_markings` create `PENDING`
+`PreparedAction` rows; `undo_action_batch` cancels a not-yet-applied batch.
+There is no MCP tool that calls `POST /api/v1/actions/{batch_id}/confirm`
+— confirmation is deliberately left to a human acting outside MCP (a
+future review UI, or a direct API call), consistent with "no destructive
+MCP tool may exist" (docs/safety.md), even though `confirm` itself doesn't
+touch Lightroom (it only flips `PENDING` -> `CONFIRMED` in SQLite).
+
+**Two incompatible httpx major versions exist in this dependency tree.**
+`httpx` (this project's own declared dependency, used by `BackendClient`
+for real network calls to `127.0.0.1`) and `httpx2` (Starlette's `TestClient`
+is built on it in the installed version) are separate PyPI packages with
+separate class hierarchies — a `TestClient` is not an `httpx.Client`.
+`BackendClient.__init__`'s `client` parameter accepts either, since it only
+ever calls `.request(method, url, **kwargs)` on whatever it's given; this
+is what lets `tests/integration/test_mcp_tools.py` exercise real MCP tools
+against the real FastAPI app in-process, with no live TCP server, by
+passing a `TestClient` in as `client=`.
+
+**A bug the tests caught**: `POST /api/v1/actions/prepare` with an unknown
+`photo_id` originally surfaced as a raw SQLite `FOREIGN KEY constraint
+failed` `IntegrityError` — a 500 with a database traceback, not a usable
+error. `ActionQueueService.prepare` now checks every `photo_id` exists
+before writing anything, raising a clean `ActionQueueError` (-> HTTP 400)
+instead.
 
 ## Incremental analysis / scale
 

@@ -12,25 +12,30 @@ mandatory constraint list.
 
 ## Status
 
-**Milestones 1–3 are implemented**: the standalone analyzer, the local
-FastAPI service, and the Lightroom Classic Lua plugin. There is no MCP
-server yet — see [`docs/architecture.md`](docs/architecture.md) for the
-milestone plan. What exists today: a CLI, a local-only HTTP API, and a
-Lightroom plugin that together select photos in Lightroom, render
-previews, run the analysis pipeline (sharpness, exposure, hashing) as a
-background job, group exact/near-duplicates, produce an explainable
-keeper ranking, and write the results back into Lightroom as custom
-metadata and review collections — all stored in a local SQLite database,
-never in Lightroom's own catalog file.
+**Milestones 1–4 are implemented**: the standalone analyzer, the local
+FastAPI service, the Lightroom Classic Lua plugin, and the MCP server —
+see [`docs/architecture.md`](docs/architecture.md) for the milestone plan.
+What exists today: a CLI, a local-only HTTP API, a Lightroom plugin, and
+an MCP server that together select photos in Lightroom, render previews,
+run the analysis pipeline (sharpness, exposure, hashing) as a background
+job, group exact/near-duplicates, produce an explainable keeper ranking,
+write the results back into Lightroom as custom metadata and review
+collections, and expose all of it to an MCP client (e.g. Claude Desktop)
+for querying and staging (never applying) changes — all stored in a local
+SQLite database, never in Lightroom's own catalog file.
 
 ## Architecture
 
 ```text
-Lightroom Classic --Lua plugin--> Python service (FastAPI) --> SQLite
-                                         |                        ^
-                                         v                        |
-                                   Analysis Engine          MCP Server <- MCP client
+Lightroom Classic --Lua plugin--\                    /-- Claude / MCP client
+                                  >-- FastAPI service <
+                     MCP server -/     (+ SQLite)      \-- (none yet: direct API use)
 ```
+
+Both the Lightroom plugin and the MCP server are separate processes that
+talk to the one FastAPI service over `127.0.0.1` HTTP — neither has direct
+database access. See [`docs/architecture.md`](docs/architecture.md) for
+the full diagram and reasoning.
 
 Details: [`docs/architecture.md`](docs/architecture.md) ·
 [`docs/algorithms.md`](docs/algorithms.md) ·
@@ -74,10 +79,11 @@ alembic upgrade head
 This creates `data/lr_cleanup.db` and `data/render_cache/` (both
 git-ignored — they're local runtime state, never checked in).
 
-## Running the Milestone-1 CLI
+## Running the standalone CLI
 
-There is no Lightroom plugin yet, so `register` points directly at a folder
-of images on disk (JPEG/PNG/TIFF) instead of Lightroom-rendered previews.
+For working against a folder of images directly (JPEG/PNG/TIFF), without
+Lightroom in the loop at all — `register` points at the files on disk
+instead of Lightroom-rendered previews.
 
 ```bash
 # Register every image under a folder as a "Photo"
@@ -147,11 +153,17 @@ curl -s -X POST http://127.0.0.1:8765/api/v1/jobs \
 curl -s http://127.0.0.1:8765/api/v1/jobs/<job_id>
 curl -s http://127.0.0.1:8765/api/v1/jobs/<job_id>/results
 curl -s http://127.0.0.1:8765/api/v1/groups/<group_id>
+curl -s http://127.0.0.1:8765/api/v1/summary
 ```
 
-`api/actions.py` (prepare/confirm/undo) doesn't exist yet — see
-[`docs/architecture.md`](docs/architecture.md)'s Milestone-2 component map
-for why it's deferred rather than stubbed out.
+Also available: `GET /api/v1/jobs` (list), `GET /api/v1/groups`
+(list, filterable by repeated `?group_type=`), `GET /api/v1/photos/blurry`,
+and the action queue (`POST /api/v1/actions/prepare`,
+`GET /api/v1/actions/pending`, `POST /api/v1/actions/{batch_id}/confirm`,
+`POST /api/v1/actions/{batch_id}/undo`) — see
+[`docs/safety.md`](docs/safety.md) for what "prepare"/"confirm" do and
+don't do (nothing here ever applies a change to Lightroom; that requires
+plugin-side work that doesn't exist yet).
 
 ## Running the tests
 
@@ -165,7 +177,10 @@ mypy src/lr_cleanup     # type check (src/ only; tests aren't held to the same s
 `tests/integration/` exercises the real FastAPI app via `TestClient` against
 an isolated in-memory SQLite database per test (see
 [`tests/integration/conftest.py`](tests/integration/conftest.py)) — nothing
-touches `data/lr_cleanup.db`.
+touches `data/lr_cleanup.db`. `test_mcp_tools.py` goes one step further:
+real MCP tool calls (`MCPServer.call_tool`) through a real `BackendClient`
+against that same in-process app, so the MCP layer is tested end-to-end
+without a live TCP server or a real MCP client process.
 
 ## Installing the Lightroom plugin
 
@@ -200,9 +215,56 @@ into an `AI Photo Cleanup` collection set (`01 – Recommended Keepers`
 through `06 – Processed`). It never touches star ratings, color labels,
 pick flags, or original files — see [`docs/safety.md`](docs/safety.md).
 
-## Connecting an MCP client
+## Running the MCP server
 
-Not applicable yet — the MCP server (Milestone 4) hasn't been implemented.
+The backend must be running first (`scripts/run-server.sh`). The MCP
+server is a separate process that talks to it over the same `127.0.0.1`
+HTTP API the Lightroom plugin uses — it has no direct database access.
+
+```bash
+source .venv/bin/activate
+lr-cleanup-mcp
+```
+
+This starts an MCP server on stdio — it's meant to be launched by an MCP
+client, not run interactively. To test it manually with the official
+[MCP Inspector](https://modelcontextprotocol.io/docs/tools/inspector):
+
+```bash
+mcp dev src/lr_cleanup/mcp_server/server.py:server
+```
+
+(`mcp[cli]` is a dev dependency — installed via `pip install -e ".[dev]"`.
+`mcp dev` needs `npx`/Node.js to launch the Inspector's web UI.)
+
+### Connecting Claude Desktop
+
+Add to Claude Desktop's MCP config (**Settings > Developer > Edit Config**):
+
+```json
+{
+  "mcpServers": {
+    "lightroom-ai-cleanup": {
+      "command": "/absolute/path/to/lightroom-ai-cleanup/.venv/bin/lr-cleanup-mcp"
+    }
+  }
+}
+```
+
+### What it exposes
+
+10 tools — `lightroom_cleanup_status`, `list_analysis_jobs`,
+`get_analysis_summary`, `find_blurry_photos`, `find_exact_duplicates`,
+`find_near_duplicates`, `get_duplicate_group`, `prepare_review_collections`,
+`prepare_markings`, `undo_action_batch`. Every list-returning tool is
+limit/offset-paginated with an enforced max page size. **No tool can
+confirm or apply anything to Lightroom** — `prepare_*` tools only ever
+stage a `PENDING` action batch in SQLite; `undo_action_batch` only ever
+cancels a not-yet-applied one. See
+[`docs/safety.md`](docs/safety.md)'s Milestone-4 scope note and
+[`docs/architecture.md`](docs/architecture.md)'s Milestone-4 component map
+for the full reasoning, including how the current MCP Python SDK API was
+verified (not assumed) before use.
 
 ## Repository layout
 
@@ -214,9 +276,9 @@ lightroom-ai-cleanup/
 │   ├── database/                SQLAlchemy models, repository, Alembic migrations
 │   ├── service/                 analyzer.py — orchestrates the pipeline (create_job/execute_job)
 │   ├── config.py                all thresholds/weights, env-driven
-│   ├── cli.py                   Milestone-1 CLI entry point (`lr-cleanup`)
-│   ├── api/                     FastAPI app (`lr-cleanup-server`): app.py, deps.py, jobs.py, results.py
-│   └── mcp_server/               MCP tools — Milestone 4, not yet implemented
+│   ├── cli.py                   standalone CLI entry point (`lr-cleanup`)
+│   ├── api/                     FastAPI app (`lr-cleanup-server`): app.py, deps.py, jobs.py, results.py, actions.py
+│   └── mcp_server/               MCP server (`lr-cleanup-mcp`): server.py, client.py, tools.py
 ├── lightroom-plugin/AICleanup.lrplugin/
 │   ├── Info.lua                 plugin manifest: menu item, metadata provider, manager panel
 │   ├── AnalyzeSelected.lua       the vertical slice: select -> export -> register -> job -> apply
@@ -232,12 +294,13 @@ lightroom-ai-cleanup/
 └── scripts/                     run-server.sh, install-plugin.sh
 ```
 
-`mcp_server/` is intentionally not populated yet — see
-[`docs/architecture.md`](docs/architecture.md) for the milestone-by-milestone
-plan and why an empty stub wasn't created ahead of the code that needs it.
-`api/actions.py` and `lightroom-plugin/AICleanup.lrplugin/ApplyActions.lua`
-deliberately don't exist yet either, for the same reason (see that doc's
-Milestone-2 and Milestone-3 component maps).
+`api/actions.py` has no **apply** endpoint, and
+`lightroom-plugin/AICleanup.lrplugin/` has no `ApplyActions.lua` — actually
+applying a confirmed action to Lightroom is the one piece of the full
+`MCP -> PreparedAction -> SQLite -> Lightroom plugin -> user confirmation
+-> apply` pipeline still unbuilt. See
+[`docs/architecture.md`](docs/architecture.md)'s Milestone-4 component map
+for why, and why that's a deliberate stopping point, not an oversight.
 
 ## Safety
 

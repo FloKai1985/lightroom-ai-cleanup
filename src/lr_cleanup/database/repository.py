@@ -11,10 +11,14 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from lr_cleanup.database.models import (
+    ActionEvent,
+    ActionLog,
+    ActionStatus,
+    ActionType,
     Analysis,
     AnalysisJob,
     DuplicateGroup,
@@ -22,6 +26,7 @@ from lr_cleanup.database.models import (
     GroupType,
     JobStatus,
     Photo,
+    PreparedAction,
     Recommendation,
 )
 
@@ -102,7 +107,7 @@ class Repository:
         return list(self.session.execute(stmt).scalars().all())
 
     def count_photos(self) -> int:
-        return len(self.session.execute(select(Photo.id)).all())
+        return self.session.execute(select(func.count()).select_from(Photo)).scalar_one()
 
     def iter_all_photos(self, batch_size: int = 200) -> Iterator[Photo]:
         """Stream every photo in fixed-size batches — never materializes the
@@ -147,6 +152,17 @@ class Repository:
         stmt = select(Analysis).where(Analysis.photo_id.in_(photo_ids))
         return {a.photo_id: a for a in self.session.execute(stmt).scalars().all()}
 
+    def count_analyzed_photos(self) -> int:
+        return self.session.execute(select(func.count()).select_from(Analysis)).scalar_one()
+
+    def count_blurry_photos(self, blur_confidence_min: float = 0.6) -> int:
+        stmt = (
+            select(func.count())
+            .select_from(Analysis)
+            .where(Analysis.blur_confidence >= blur_confidence_min)
+        )
+        return self.session.execute(stmt).scalar_one()
+
     # --- Jobs ----------------------------------------------------------
 
     def create_job(self, total_photos: int) -> AnalysisJob:
@@ -157,6 +173,19 @@ class Repository:
 
     def get_job(self, job_id: str) -> AnalysisJob | None:
         return self.session.get(AnalysisJob, job_id)
+
+    def list_jobs(self, limit: int = 20, offset: int = 0) -> list[AnalysisJob]:
+        stmt = (
+            select(AnalysisJob)
+            .order_by(AnalysisJob.created_at.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+        return list(self.session.execute(stmt).scalars().all())
+
+    def get_latest_job(self) -> AnalysisJob | None:
+        stmt = select(AnalysisJob).order_by(AnalysisJob.created_at.desc()).limit(1)
+        return self.session.execute(stmt).scalars().first()
 
     def update_job_progress(
         self, job: AnalysisJob, *, processed_delta: int = 0, failed_delta: int = 0
@@ -229,12 +258,19 @@ class Repository:
         return self.session.get(DuplicateGroup, group_id)
 
     def list_groups(
-        self, group_type: GroupType | None = None, limit: int = 100, offset: int = 0
+        self,
+        group_types: list[GroupType] | None = None,
+        limit: int = 100,
+        offset: int = 0,
     ) -> list[DuplicateGroup]:
         stmt = select(DuplicateGroup).order_by(DuplicateGroup.id).limit(limit).offset(offset)
-        if group_type is not None:
-            stmt = stmt.where(DuplicateGroup.group_type == group_type)
+        if group_types:
+            stmt = stmt.where(DuplicateGroup.group_type.in_(group_types))
         return list(self.session.execute(stmt).scalars().all())
+
+    def count_groups_by_type(self) -> dict[GroupType, int]:
+        stmt = select(DuplicateGroup.group_type, func.count()).group_by(DuplicateGroup.group_type)
+        return dict(self.session.execute(stmt).tuples().all())
 
     def list_blurry_photos(
         self, blur_confidence_min: float = 0.6, limit: int = 100, offset: int = 0
@@ -247,3 +283,61 @@ class Repository:
             .offset(offset)
         )
         return list(self.session.execute(stmt).scalars().all())
+
+    # --- Action queue (Milestone 4) --------------------------------------
+    # MCP tools may only ever *prepare* or *undo* actions here — never
+    # apply one. See docs/safety.md's two-phase action model.
+
+    def create_prepared_action(
+        self, batch_id: str, photo_id: int, action_type: ActionType, payload: dict
+    ) -> PreparedAction:
+        action = PreparedAction(
+            batch_id=batch_id, photo_id=photo_id, action_type=action_type, payload=payload
+        )
+        self.session.add(action)
+        self.session.flush()
+        return action
+
+    def list_actions_for_batch(self, batch_id: str) -> list[PreparedAction]:
+        stmt = select(PreparedAction).where(PreparedAction.batch_id == batch_id)
+        return list(self.session.execute(stmt).scalars().all())
+
+    def list_pending_actions(
+        self, batch_id: str | None = None, limit: int = 100, offset: int = 0
+    ) -> list[PreparedAction]:
+        stmt = (
+            select(PreparedAction)
+            .where(PreparedAction.status == ActionStatus.PENDING)
+            .order_by(PreparedAction.created_at)
+            .limit(limit)
+            .offset(offset)
+        )
+        if batch_id is not None:
+            stmt = stmt.where(PreparedAction.batch_id == batch_id)
+        return list(self.session.execute(stmt).scalars().all())
+
+    def set_action_status(
+        self,
+        action: PreparedAction,
+        status: ActionStatus,
+        *,
+        confirmed_at: datetime | None = None,
+        applied_at: datetime | None = None,
+        undone_at: datetime | None = None,
+    ) -> None:
+        action.status = status
+        if confirmed_at is not None:
+            action.confirmed_at = confirmed_at
+        if applied_at is not None:
+            action.applied_at = applied_at
+        if undone_at is not None:
+            action.undone_at = undone_at
+        self.session.flush()
+
+    def create_action_log(
+        self, prepared_action_id: int, event: ActionEvent, detail: str | None = None
+    ) -> ActionLog:
+        log = ActionLog(prepared_action_id=prepared_action_id, event=event, detail=detail)
+        self.session.add(log)
+        self.session.flush()
+        return log

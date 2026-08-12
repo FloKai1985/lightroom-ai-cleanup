@@ -16,7 +16,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
 from lr_cleanup import __version__
-from lr_cleanup.api import jobs, results
+from lr_cleanup.api import actions, jobs, results
 from lr_cleanup.config import Settings, get_settings
 from lr_cleanup.database.session import init_db, make_engine, make_session_factory, session_scope
 from lr_cleanup.logging_config import configure_logging
@@ -50,6 +50,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.include_router(jobs.router)
     app.include_router(results.router)
+    app.include_router(actions.router)
 
     @app.get("/health")
     def health(request: Request) -> JSONResponse:
