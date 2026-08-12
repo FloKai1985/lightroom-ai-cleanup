@@ -53,13 +53,11 @@ class ActionQueueService:
         if not items:
             raise ActionQueueError("cannot prepare an empty batch")
 
-        missing = [
-            item.photo_id
-            for item in items
-            if self.repository.get_photo(item.photo_id) is None
-        ]
+        requested_ids = {item.photo_id for item in items}
+        found_ids = self.repository.get_photos_by_ids(list(requested_ids)).keys()
+        missing = requested_ids - found_ids
         if missing:
-            raise ActionQueueError(f"unknown photo_id(s): {sorted(set(missing))}")
+            raise ActionQueueError(f"unknown photo_id(s): {sorted(missing)}")
 
         batch_id = uuid.uuid4().hex
         actions = []

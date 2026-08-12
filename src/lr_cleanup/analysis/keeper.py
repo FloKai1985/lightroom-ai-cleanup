@@ -60,6 +60,13 @@ def _relative(value: float, values: list[float]) -> float:
     return (value - lo) / (hi - lo)
 
 
+def _clamp_confidence(value: float) -> float:
+    """Confidence is never reported as fully certain (0.99 ceiling) or
+    fully arbitrary (0.05 floor) — both ends read as overclaiming for a
+    heuristic technical estimate (docs/algorithms.md)."""
+    return max(0.05, min(0.99, value))
+
+
 def _preference_score(candidate: KeeperCandidate) -> float:
     rating = candidate.existing_rating
     rating_component = rating / 5 if rating is not None else 0.5
@@ -126,9 +133,19 @@ def rank_group(
         else:
             recommendation = Recommendation.LIKELY_REDUNDANT
 
-        second_score = scored[1][1] if len(scored) > 1 else score
-        raw_confidence = gap_from_top if rank > 1 else (top_score - second_score) + 0.5
-        confidence = max(0.05, min(0.99, raw_confidence))
+        if rank == 1:
+            # Confidence *in the KEEPER pick*: a 0.5 baseline (a lone
+            # candidate is never reported as fully certain) plus how far
+            # ahead of the runner-up it is — a clear win raises confidence,
+            # a near-tie keeps it close to the baseline.
+            runner_up_score = scored[1][1] if len(scored) > 1 else top_score
+            confidence = _clamp_confidence(0.5 + (top_score - runner_up_score))
+        else:
+            # Confidence *that this candidate is NOT the keeper*: how far
+            # behind the top score it is. A small gap is exactly the
+            # REVIEW case (ambiguous -> low confidence); a large gap is
+            # clearly LIKELY_REDUNDANT (-> high confidence).
+            confidence = _clamp_confidence(gap_from_top)
 
         reasons: list[str] = []
         if parts["relative_sharpness"] >= 0.999:

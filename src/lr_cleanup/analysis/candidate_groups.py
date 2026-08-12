@@ -88,14 +88,37 @@ def group_near_duplicates(
     `burst_window_seconds` of each other; a looser, transitively-connected
     cluster spanning more time is labeled `NEAR_DUPLICATE` (see
     docs/algorithms.md §2).
+
+    Candidates are sorted by capture time and compared against a sliding
+    window instead of every other candidate. `_similar()` always rejects a
+    pair outside `burst_window_seconds` first, so a naive all-pairs scan
+    wastes almost every comparison it makes once the library is larger
+    than a handful of photos — O(n^2) against the "100,000+ photos" target
+    in docs/architecture.md's Incremental analysis section is roughly 5
+    billion comparisons. Sorting first turns that into ~O(n * w), where w
+    is how many photos actually fall inside any given burst window
+    (typically a handful), because once one candidate is more than the
+    window away from the current photo, every later one (being later in
+    sorted order) is too — see the `break` below. Photos with no
+    capture_time can never match anything (`_similar` requires both sides
+    to have one) so they're dropped before sorting rather than carried
+    through as guaranteed-singleton components.
     """
-    candidates = [p for p in photos if not p.is_virtual_copy]
+    candidates = sorted(
+        (p for p in photos if not p.is_virtual_copy and p.capture_time is not None),
+        key=lambda p: p.capture_time,  # type: ignore[return-value,arg-type]
+    )
     node_ids = [p.photo_id for p in candidates]
     by_id = {p.photo_id: p for p in candidates}
 
     edges: list[tuple[int, int]] = []
     for i, a in enumerate(candidates):
         for b in candidates[i + 1 :]:
+            # Both have capture_time (filtered above); sorted ascending, so
+            # this gap only grows as b moves later in the list.
+            assert a.capture_time is not None and b.capture_time is not None
+            if (b.capture_time - a.capture_time).total_seconds() > burst_window_seconds:
+                break
             if _similar(a, b, burst_window_seconds, phash_max_distance, aspect_ratio_tolerance):
                 edges.append((a.photo_id, b.photo_id))
 

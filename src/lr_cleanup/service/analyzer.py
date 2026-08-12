@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import time
+from collections.abc import Iterable
 from datetime import UTC, datetime
 
 import structlog
@@ -96,9 +97,16 @@ class AnalyzerService:
             fingerprint=fingerprint,
         )
 
-    def _resolve_photos(self, photo_ids: list[int] | None) -> list[Photo]:
+    def _resolve_photos(self, photo_ids: list[int] | None) -> Iterable[Photo]:
+        """Returns a lazy stream over the whole library (`photo_ids is
+        None`) rather than a list — wrapping `iter_all_photos` in `list()`
+        here would materialize every `Photo` row before the analysis loop
+        even starts, defeating its batching (docs/architecture.md's
+        Incremental analysis section). A specific id list is small enough
+        (an MCP/plugin-submitted batch, never "the whole library") that
+        resolving it eagerly is fine."""
         if photo_ids is None:
-            return list(self.repository.iter_all_photos(batch_size=self.settings.batch_size))
+            return self.repository.iter_all_photos(batch_size=self.settings.batch_size)
         return [p for pid in photo_ids if (p := self.repository.get_photo(pid)) is not None]
 
     def create_job(self, photo_ids: list[int] | None = None) -> AnalysisJob:

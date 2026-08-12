@@ -217,16 +217,29 @@ server; the plugin can only be a client of it.**
   3.0 to 8.0 and use the same calls), and a low pin maximizes compatibility
   with older Lightroom Classic installations. Current Lightroom Classic
   ships SDK 14.x, so this is not a ceiling on what's usable, only a floor.
+- **`LrHttp`'s failure-path return shape.** The API Reference confirms what
+  `LrHttp.get`/`.post` return on *success* (`response, headers` with
+  `headers.status`), which `HttpClient.lua::checkResponse` relies on. It
+  does not document what they return when the connection itself fails
+  (refused, DNS, timeout) — `checkResponse` assumes `body == nil` signals
+  that case, a common convention for Lua HTTP wrappers but not one this
+  research confirmed against a real failure. This can't cause a crash
+  either way: every call site wraps `HttpClient.getJson`/`.postJson` in
+  `pcall`, so if `LrHttp` instead throws its own native Lua error on
+  connection failure, the same `pcall` catches that too — the only thing
+  at risk is the specificity of the message shown to the user (a generic
+  SDK error instead of `HttpClient`'s "is it running?" hint), not
+  correctness or safety.
 
 ## What Milestone 3 deliberately does not build
 
-- **`ApplyActions.lua` does not exist yet.** It's the file that would let a
-  user-confirmed `PreparedAction` get applied to Lightroom (a rating/flag
-  change, per `docs/safety.md`'s two-phase action model), but the HTTP
-  endpoints it would call (`POST /api/v1/actions/*`) don't exist yet either
-  — see `docs/architecture.md`'s Milestone-2 component map. Building the
-  Lua side of a contract that doesn't exist on the Python side would mean
-  guessing at both ends at once.
+- **`ApplyActions.lua` still does not exist.** It's the file that would let
+  a `CONFIRMED` `PreparedAction` actually get applied to Lightroom, per
+  `docs/safety.md`'s two-phase action model. The HTTP side of the action
+  queue (`POST /api/v1/actions/prepare`, `GET .../pending`,
+  `POST .../confirm`, `POST .../undo`) exists as of Milestone 4 — but
+  nothing polls for `CONFIRMED` batches and applies them, on either side.
+  See `docs/architecture.md`'s Milestone-4 component map.
 - **No persistent background/polling loop** (the `LrInitPlugin` +
   `LrForceInitPlugin` + long-running-task pattern `Automaat/lightroom-mcp`
   uses for its always-on bridge). The brief's Milestone 5 explicitly asks

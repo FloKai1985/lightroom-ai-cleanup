@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from lr_cleanup.api.deps import get_repository
-from lr_cleanup.database.models import DuplicateGroup, GroupType, JobStatus, Recommendation
+from lr_cleanup.database.models import DuplicateGroup, GroupType, JobStatus, Photo, Recommendation
 from lr_cleanup.database.repository import Repository
 
 router = APIRouter(prefix="/api/v1", tags=["results"])
@@ -93,10 +93,10 @@ class SummaryResponse(BaseModel):
     latest_job: LatestJobSummary | None
 
 
-def _group_response(group: DuplicateGroup, repo: Repository) -> GroupResponse:
+def _group_response(group: DuplicateGroup, photos_by_id: dict[int, Photo]) -> GroupResponse:
     members = []
     for member in sorted(group.members, key=lambda m: m.rank):
-        photo = repo.get_photo(member.photo_id)
+        photo = photos_by_id.get(member.photo_id)
         members.append(
             GroupMemberResponse(
                 photo_id=member.photo_id,
@@ -114,6 +114,16 @@ def _group_response(group: DuplicateGroup, repo: Repository) -> GroupResponse:
         generated_by_job_id=group.analysis_job_id,
         members=members,
     )
+
+
+def _group_responses(groups: list[DuplicateGroup], repo: Repository) -> list[GroupResponse]:
+    """Renders every group in one batch, fetching all referenced photos in
+    a single query instead of one `get_photo` per member per group — the
+    naive per-member lookup turns a page of groups into hundreds of
+    queries (see docs/architecture.md's "Post-Milestone-4 refactor pass")."""
+    photo_ids = {member.photo_id for group in groups for member in group.members}
+    photos_by_id = repo.get_photos_by_ids(list(photo_ids))
+    return [_group_response(group, photos_by_id) for group in groups]
 
 
 @router.get("/jobs/{job_id}/results", response_model=JobResultsResponse)
@@ -140,7 +150,7 @@ def get_job_results(
         processed_photos=job.processed_photos,
         failed_photos=job.failed_photos,
         groups_regenerated=job.groups_regenerated,
-        groups=[_group_response(g, repo) for g in groups],
+        groups=_group_responses(groups, repo),
     )
 
 
@@ -152,7 +162,7 @@ def list_groups(
     repo: Repository = Depends(get_repository),
 ) -> list[GroupResponse]:
     groups = repo.list_groups(group_types=group_type, limit=limit, offset=offset)
-    return [_group_response(g, repo) for g in groups]
+    return _group_responses(groups, repo)
 
 
 @router.get("/groups/{group_id}", response_model=GroupResponse)
@@ -160,7 +170,7 @@ def get_group(group_id: int, repo: Repository = Depends(get_repository)) -> Grou
     group = repo.get_group(group_id)
     if group is None:
         raise HTTPException(status_code=404, detail="group not found")
-    return _group_response(group, repo)
+    return _group_responses([group], repo)[0]
 
 
 @router.get("/photos/blurry", response_model=list[BlurryPhotoResponse])
@@ -173,9 +183,10 @@ def list_blurry_photos(
     analyses = repo.list_blurry_photos(
         blur_confidence_min=min_confidence, limit=limit, offset=offset
     )
+    photos_by_id = repo.get_photos_by_ids([a.photo_id for a in analyses])
     results: list[BlurryPhotoResponse] = []
     for analysis in analyses:
-        photo = repo.get_photo(analysis.photo_id)
+        photo = photos_by_id.get(analysis.photo_id)
         results.append(
             BlurryPhotoResponse(
                 photo_id=analysis.photo_id,

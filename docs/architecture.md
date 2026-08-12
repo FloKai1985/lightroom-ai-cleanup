@@ -281,6 +281,60 @@ error. `ActionQueueService.prepare` now checks every `photo_id` exists
 before writing anything, raising a clean `ActionQueueError` (-> HTTP 400)
 instead.
 
+## Post-Milestone-4 refactor pass
+
+A deliberate risk/clarity review across the whole codebase once Milestones
+1–4 were feature-complete, rather than only reviewing each milestone's own
+diff in isolation. Findings, in order of severity:
+
+- **O(n²) near-duplicate grouping — the most serious finding.**
+  `analysis/candidate_groups.py::group_near_duplicates` compared every
+  candidate photo against every other one. `_similar()` always rejects a
+  pair outside `burst_window_seconds` first, so almost every comparison in
+  a large library was wasted work — at the brief's own "100,000+ photos"
+  target this is ~5 billion comparisons, not a slow-but-working path but
+  an effectively infinite one. Fixed by sorting candidates by capture time
+  and comparing each one against a sliding window that stops the moment
+  the time gap exceeds the burst window (sorted order guarantees every
+  later candidate is even further away). Behavior is identical — same
+  edge set, same groups — just without the wasted comparisons; the
+  existing test suite passed unchanged, and new tests cover shuffled input
+  order and a lone photo that must not bridge two separate clusters.
+  Measured: 5,000 photos spread across a year with a few small bursts
+  went from a naive-worst-case tens-of-seconds estimate to 0.033s.
+- **N+1 queries in every group/photo list endpoint.**
+  `GroupResponse` rendering, `GET /api/v1/photos/blurry`, the CLI's
+  `groups`/`blurry` commands, and `ActionQueueService.prepare`'s
+  photo-existence check all called `repository.get_photo(id)` once per
+  row in a loop. Added `Repository.get_photos_by_ids` (one `WHERE id
+  IN (...)` query) and switched every one of those call sites to it —
+  a page of 500 groups with a few members each went from potentially
+  thousands of individual queries to two (one for groups, one for all
+  their members' photos).
+- **`AnalyzerService._resolve_photos` silently defeated its own batching.**
+  `execute_job` is documented (this file's Incremental analysis section)
+  as streaming photos from the database in batches rather than
+  materializing the whole library — but `_resolve_photos` wrapped
+  `iter_all_photos()` in `list(...)`, pulling every `Photo` row into memory
+  before the analysis loop even started. Fixed by returning the generator
+  directly when analyzing the whole library (a specific `photo_ids` list —
+  always a bounded MCP/plugin-submitted batch, never "the whole library" —
+  is still resolved eagerly, which is fine at that size).
+- **`keeper.py`'s confidence formula was needlessly hard to follow.**
+  `second_score`/`raw_confidence` were computed identically on every loop
+  iteration but only meaningfully used for the top-ranked candidate,
+  collapsing two different semantic questions ("how confident are we this
+  is the keeper" vs. "how confident are we this ISN'T the keeper") into
+  one unexplained expression. Split into two explicit, commented branches
+  with a shared `_clamp_confidence` helper; the math is unchanged (all
+  existing tests pass byte-for-byte on their assertions).
+- **`HttpClient.lua`'s failure-path assumption, documented rather than
+  left implicit.** See docs/lightroom-plugin.md's "Remaining caveats" —
+  `checkResponse` assumes `LrHttp` returns a nil body on connection
+  failure, which wasn't explicitly confirmed (only the success-path return
+  shape was). Every call site's `pcall` makes this safe either way; the
+  gap is now written down instead of silently assumed correct.
+
 ## Incremental analysis / scale
 
 Target: libraries with 100,000+ photos, without loading the library into

@@ -1,6 +1,7 @@
 from datetime import UTC, datetime, timedelta
 
 from lr_cleanup.analysis.candidate_groups import (
+    DuplicateGroupResult,
     PhotoForGrouping,
     group_exact_duplicates,
     group_near_duplicates,
@@ -158,3 +159,47 @@ def test_transitive_chain_spanning_beyond_window_is_near_duplicate_not_burst() -
     assert len(groups) == 1
     assert groups[0].group_type == GroupType.NEAR_DUPLICATE
     assert groups[0].photo_ids == [1, 2, 3]
+
+
+def test_sliding_window_does_not_merge_two_distant_clusters() -> None:
+    # Regression test for the O(n^2) -> sorted-sliding-window optimization:
+    # a lone photo far outside the burst window, sandwiched between two
+    # separate close-together clusters, must not bridge them into one group,
+    # and the early `break` on time gap must not skip comparisons it should
+    # still make within each cluster.
+    photos = [
+        _photo(1, phash_distance=0, seconds_after=0),
+        _photo(2, phash_distance=0, seconds_after=2),
+        _photo(3, phash_distance=0, seconds_after=1000),  # isolated, far from both clusters
+        _photo(4, phash_distance=0, seconds_after=2000),
+        _photo(5, phash_distance=0, seconds_after=2002),
+    ]
+    groups = group_near_duplicates(
+        photos, burst_window_seconds=10, phash_max_distance=8, aspect_ratio_tolerance=0.05
+    )
+    photo_id_sets = sorted(tuple(g.photo_ids) for g in groups)
+    assert photo_id_sets == [(1, 2), (4, 5)]
+    assert all(g.group_type == GroupType.BURST for g in groups)
+
+
+def test_sliding_window_is_independent_of_input_order() -> None:
+    # The optimization sorts internally, so callers passing photos in
+    # arbitrary (e.g. database insertion) order must get the same result
+    # as if they'd been pre-sorted by capture time.
+    ordered = [
+        _photo(1, phash_distance=0, seconds_after=0),
+        _photo(2, phash_distance=0, seconds_after=2),
+        _photo(3, phash_distance=0, seconds_after=1000),
+        _photo(4, phash_distance=0, seconds_after=2000),
+        _photo(5, phash_distance=0, seconds_after=2002),
+    ]
+    shuffled = [ordered[3], ordered[0], ordered[4], ordered[2], ordered[1]]
+
+    kwargs = dict(burst_window_seconds=10, phash_max_distance=8, aspect_ratio_tolerance=0.05)
+    ordered_result = group_near_duplicates(ordered, **kwargs)
+    shuffled_result = group_near_duplicates(shuffled, **kwargs)
+
+    def normalize(groups: list[DuplicateGroupResult]) -> list[tuple[GroupType, tuple[int, ...]]]:
+        return sorted((g.group_type, tuple(g.photo_ids)) for g in groups)
+
+    assert normalize(ordered_result) == normalize(shuffled_result)

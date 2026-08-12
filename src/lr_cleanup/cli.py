@@ -118,10 +118,12 @@ def cmd_groups(_args: argparse.Namespace) -> None:
     with session_scope(session_factory) as session:
         repo = Repository(session)
         groups = repo.list_groups(limit=1000)
+        photo_ids = {member.photo_id for group in groups for member in group.members}
+        photos_by_id = repo.get_photos_by_ids(list(photo_ids))
         for group in groups:
             print(f"\nGroup #{group.id} [{group.group_type.value}]")
             for member in sorted(group.members, key=lambda m: m.rank):
-                photo = repo.get_photo(member.photo_id)
+                photo = photos_by_id.get(member.photo_id)
                 path = photo.original_path if photo else "?"
                 print(
                     f"  rank={member.rank} {member.recommendation.value:16s} "
@@ -135,8 +137,9 @@ def cmd_blurry(args: argparse.Namespace) -> None:
     with session_scope(session_factory) as session:
         repo = Repository(session)
         analyses = repo.list_blurry_photos(blur_confidence_min=args.threshold, limit=args.limit)
+        photos_by_id = repo.get_photos_by_ids([a.photo_id for a in analyses])
         for analysis in analyses:
-            photo = repo.get_photo(analysis.photo_id)
+            photo = photos_by_id.get(analysis.photo_id)
             path = photo.original_path if photo else "?"
             print(f"blur_confidence={analysis.blur_confidence:.3f} path={path}")
 

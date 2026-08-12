@@ -102,6 +102,15 @@ class Repository:
     def get_photo(self, photo_id: int) -> Photo | None:
         return self.session.get(Photo, photo_id)
 
+    def get_photos_by_ids(self, photo_ids: list[int]) -> dict[int, Photo]:
+        """Batched lookup — use this instead of `get_photo` in a loop
+        whenever resolving more than one id, to avoid N+1 queries (e.g.
+        rendering a group's members or a page of blurry-photo results)."""
+        if not photo_ids:
+            return {}
+        stmt = select(Photo).where(Photo.id.in_(photo_ids))
+        return {p.id: p for p in self.session.execute(stmt).scalars().all()}
+
     def list_photos(self, limit: int = 200, offset: int = 0) -> list[Photo]:
         stmt = select(Photo).order_by(Photo.id).limit(limit).offset(offset)
         return list(self.session.execute(stmt).scalars().all())
