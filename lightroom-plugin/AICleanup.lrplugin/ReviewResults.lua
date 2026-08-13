@@ -128,19 +128,30 @@ local function formatNumber( n )
 	return string.format( '%.4f', n )
 end
 
+--- Every analyzed photo gets one of exactly five values — never blank —
+--- so "no recommendation shown" never reads as ambiguous with "not
+--- analyzed yet": OUT_OF_FOCUS, KEEPER, REVIEW, LIKELY_REDUNDANT, or
+--- UNIQUE (analyzed, not blurry, not part of any duplicate/near-duplicate
+--- group — nothing to flag).
+---
 --- Blur takes priority over group-based ranking: a high-confidence-blur
 --- photo is never in a near-duplicate/burst group (the backend excludes
---- it — docs/algorithms.md §2), so it would normally just show a blank
+--- it — docs/algorithms.md §2), so it would otherwise show a blank
 --- recommendation; this makes that explicit instead, and keeps
 --- "out of focus" and "likely redundant" from ever being conflated for a
 --- single photo. A blurry photo that's *also* in an exact_duplicate group
 --- (byte-identical to something else) still reads OUT_OF_FOCUS here — the
 --- exact-duplicate fact is still visible via AI Duplicate Type/Group.
+---
+--- UNIQUE is distinct from KEEPER on purpose: KEEPER means "won a
+--- comparison against at least one other photo"; UNIQUE means "had
+--- nothing to compare against." Collapsing them would overstate what the
+--- analysis actually found for a photo that was simply never in contention.
 local function effectiveRecommendation( analysis, groupInfo )
 	if analysis.blur_confidence >= HIGH_CONFIDENCE_BLUR_THRESHOLD then
 		return 'OUT_OF_FOCUS'
 	end
-	return groupInfo.recommendation or ''
+	return groupInfo.recommendation or 'UNIQUE'
 end
 
 --- Writes AI plugin metadata and files each photo into the appropriate

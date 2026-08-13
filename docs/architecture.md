@@ -396,6 +396,76 @@ be near in time. Two changes, both covered in docs/algorithms.md §2/§5:
   presentation-level composition happens in the one place that already
   has both the blur number and the group result in hand.
 
+Immediate follow-up, same real-usage feedback: a photo that was sharp
+*and* not part of any group fell through both branches above and got a
+blank `AI Recommendation` — indistinguishable from "not analyzed yet."
+`effectiveRecommendation` now has a third branch: `groupInfo.recommendation
+or 'UNIQUE'`, so every analyzed photo gets one of exactly five values.
+`UNIQUE` is a deliberately distinct value from `KEEPER` — `KEEPER` means
+"won a comparison," `UNIQUE` means "had nothing to compare against";
+collapsing them would overstate what was actually found. This is purely a
+plugin-layer guarantee — the backend's API responses are unchanged, and
+still have no `recommendation` at all for an ungrouped photo, since it
+genuinely computed nothing to report there.
+
+## Per-request threshold/weight overrides (Plug-in Manager settings)
+
+Also prompted by real usage: the thresholds in `config.py`
+(`burst_window_seconds`, `phash_max_distance`, `aspect_ratio_tolerance`,
+the four keeper-ranking weights, `highlight_clip_threshold`,
+`shadow_clip_threshold`, `high_confidence_blur_threshold`) were only
+ever configurable via the server's `.env` file — no way to adjust them
+from where the plugin is actually used.
+
+**Design choice: plugin-local preference, not a server-side setting.**
+`POST /api/v1/jobs` (`api/jobs.py::JobCreateRequest`) now accepts all ten
+fields as optional per-request overrides (`None` = use the server's
+configured default). There is no new persistence on the backend and no
+new "settings" endpoint — the Lightroom plugin is the source of truth for
+"what should this run use," stored in its own `LrPrefs` (the same pattern
+already used for the backend URL), and sent fresh with every job. This
+was a deliberate choice over the alternative (a DB-backed settings table
++ GET/PUT API): the ask was specifically for *plugin* settings, or in
+other words a local preference; a server-wide override would mean a
+direct API/MCP caller silently inherits someone's Lightroom-side tuning,
+which is more surprising than not.
+
+- **`_resolve_settings`** (`api/jobs.py`) overlays the provided overrides
+  onto `get_settings()` and reconstructs a `Settings` instance rather than
+  using `model_copy` — `model_copy` doesn't re-run validators, and the
+  keeper-weight-sum-to-1.0 check specifically needs to run again against
+  the *merged* result, not just the raw override payload (e.g. overriding
+  only `weight_sharpness` must still validate against the other three
+  existing weights). An invalid combination is rejected with `400` before
+  any `AnalysisJob` row is created — checked directly: `client.get
+  ("/api/v1/jobs")` after a rejected request returns `[]`.
+- The resolved `Settings` is threaded through explicitly: `create_job`
+  passes it to the `AnalyzerService` used for the initial row, and again
+  to the background task (`_run_job_in_background` gained a `settings`
+  parameter) — both must use the *same* resolved values, not each
+  independently call `get_settings()` and silently diverge.
+- **`lightroom-plugin/AICleanup.lrplugin/Thresholds.lua`** (new) is the
+  single source of truth for the ten fields' `LrPrefs` keys, API field
+  names, defaults, and help text — used by both
+  `PluginInfoProvider.lua` (renders the settings UI from
+  `Thresholds.DEFINITIONS`) and `AnalyzeSelected.lua`
+  (`Thresholds.buildApiOverrides(prefs)` builds the override payload
+  merged into every job request). One list, not two hand-kept-in-sync
+  ones.
+- Fields are stored as **strings** in `LrPrefs`, parsed with `tonumber()`
+  at send time (falling back to the field's own default if parsing
+  fails, e.g. the user leaves a field blank or types garbage) — not bound
+  as numeric-typed LrView fields. This sidesteps relying on any
+  LrView numeric-edit-field binding behavior this project hasn't verified
+  against a real source, consistent with docs/lightroom-plugin.md's
+  "don't guess the SDK" discipline; a plain string-bound `f:edit_field` is
+  the one pattern already confirmed working here (the backend-URL field).
+- Verified end to end, not just unit-tested in isolation: built a job
+  payload via `Thresholds.buildApiOverrides` + `Json.lua`, confirmed
+  `phash_max_distance` (an `int` field on the backend) encodes as a bare
+  `8`, not `8.0`, then POSTed that exact JSON string to a real running
+  `TestClient`-backed app and confirmed `202 Accepted`.
+
 ## Incremental analysis / scale
 
 Target: libraries with 100,000+ photos, without loading the library into

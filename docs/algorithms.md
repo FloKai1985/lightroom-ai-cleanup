@@ -144,3 +144,19 @@ still reads `OUT_OF_FOCUS`, never `KEEPER`, even though its
 exact-duplicate group ranking might otherwise have called it one. This
 keeps "why does this photo need attention" unambiguous — a photo is never
 labeled both "worse than its duplicate" and "out of focus" at once.
+
+**Every analyzed photo gets a label, never a blank field.**
+`effectiveRecommendation` returns one of exactly five values:
+`OUT_OF_FOCUS`, `KEEPER`, `REVIEW`, `LIKELY_REDUNDANT`, or — for a photo
+that's sharp and isn't part of any duplicate/near-duplicate group, which
+previously fell through to a blank `AI Recommendation` — `UNIQUE`.
+`UNIQUE` is deliberately a distinct value from `KEEPER`, not a synonym:
+`KEEPER` means "won a comparison against at least one other photo";
+`UNIQUE` means "had nothing to compare against." Collapsing the two would
+overstate what the analysis actually found for a photo that was simply
+never in contention. This is a plugin-layer guarantee, not a backend
+one — the API's `GroupResponse`/`PhotoAnalysisResponse` are unaffected;
+`GET /api/v1/photos/{id}/analysis` still has no `recommendation` field at
+all for an ungrouped photo, since the backend has genuinely computed
+nothing to report there. `UNIQUE` is what the plugin says on the backend's
+behalf once it also knows the photo wasn't flagged as blurry.

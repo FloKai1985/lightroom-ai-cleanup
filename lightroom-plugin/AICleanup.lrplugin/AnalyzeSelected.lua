@@ -21,9 +21,13 @@ local LrDialogs = import 'LrDialogs'
 local LrFileUtils = import 'LrFileUtils'
 local LrPathUtils = import 'LrPathUtils'
 local LrLogger = import 'LrLogger'
+local LrPrefs = import 'LrPrefs'
 
 local HttpClient = require 'HttpClient'
 local ReviewResults = require 'ReviewResults'
+local Thresholds = require 'Thresholds'
+
+local prefs = LrPrefs.prefsForPlugin()
 
 local logger = LrLogger( 'AICleanup' )
 logger:enable( 'logfile' )
@@ -237,7 +241,15 @@ local function run( context )
 	end
 
 	progressScope:setCaption( 'Starting analysis job...' )
-	local jobOk, job = LrTasks.pcall( HttpClient.postJson, '/api/v1/jobs', { photo_ids = photoIds, regenerate_groups = true } )
+	-- Threshold/weight overrides from the Plug-in Manager settings panel
+	-- (Thresholds.lua) ride along with every job. `nil` fields would be
+	-- dropped by Json.lua's encoder anyway, but buildApiOverrides always
+	-- returns a concrete number per field (falling back to its own
+	-- default), so every job explicitly states what it used.
+	local jobRequest = Thresholds.buildApiOverrides( prefs )
+	jobRequest.photo_ids = photoIds
+	jobRequest.regenerate_groups = true
+	local jobOk, job = LrTasks.pcall( HttpClient.postJson, '/api/v1/jobs', jobRequest )
 	if not jobOk then
 		LrDialogs.message( 'AI Cleanup: could not start analysis job', tostring( job ), 'critical' )
 		return

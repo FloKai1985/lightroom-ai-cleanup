@@ -12,10 +12,11 @@ from datetime import datetime
 
 import structlog
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from sqlalchemy.orm import Session, sessionmaker
 
 from lr_cleanup.api.deps import get_repository
+from lr_cleanup.config import Settings, get_settings
 from lr_cleanup.database.models import AnalysisJob, JobStatus
 from lr_cleanup.database.repository import PhotoInput, Repository
 from lr_cleanup.database.session import session_scope
@@ -75,6 +76,40 @@ class JobCreateRequest(BaseModel):
     """Whether to recompute duplicate/near-duplicate groups + keeper ranking
     once analysis finishes, tagged with this job's id."""
 
+    # Per-request threshold/weight overrides — every field here mirrors a
+    # Settings field (config.py) and defaults to `None`, meaning "use the
+    # server's configured default." This is how the Lightroom plugin's
+    # Plug-in Manager settings panel applies the user's chosen thresholds
+    # without needing any server-side persistence of its own — the plugin
+    # is the source of truth for "what should this run use," stored in
+    # its own LrPrefs (see lightroom-plugin/.../PluginInfoProvider.lua).
+    burst_window_seconds: float | None = None
+    phash_max_distance: int | None = None
+    aspect_ratio_tolerance: float | None = None
+    weight_sharpness: float | None = None
+    weight_exposure: float | None = None
+    weight_technical: float | None = None
+    weight_existing_preference: float | None = None
+    highlight_clip_threshold: float | None = None
+    shadow_clip_threshold: float | None = None
+    high_confidence_blur_threshold: float | None = None
+
+    def overrides(self) -> dict[str, float | int]:
+        fields = (
+            "burst_window_seconds",
+            "phash_max_distance",
+            "aspect_ratio_tolerance",
+            "weight_sharpness",
+            "weight_exposure",
+            "weight_technical",
+            "weight_existing_preference",
+            "highlight_clip_threshold",
+            "shadow_clip_threshold",
+            "high_confidence_blur_threshold",
+        )
+        values = {f: getattr(self, f) for f in fields}
+        return {f: v for f, v in values.items() if v is not None}
+
 
 class JobResponse(BaseModel):
     job_id: str
@@ -86,6 +121,23 @@ class JobResponse(BaseModel):
     started_at: datetime | None
     completed_at: datetime | None
     error_summary: str | None
+
+
+def _resolve_settings(overrides: dict[str, float | int]) -> Settings:
+    """Overlays `overrides` onto the server's configured defaults and
+    re-validates the result — e.g. the four keeper-ranking weights must
+    still sum to 1.0 even after a partial override. `Settings.model_copy`
+    doesn't re-run validators, so this reconstructs via the constructor
+    instead, which does."""
+    base = get_settings()
+    if not overrides:
+        return base
+    merged = base.model_dump()
+    merged.update(overrides)
+    try:
+        return Settings(**merged)
+    except ValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _job_response(job: AnalysisJob) -> JobResponse:
@@ -107,6 +159,7 @@ def _run_job_in_background(
     job_id: str,
     photo_ids: list[int] | None,
     regenerate_groups: bool,
+    settings: Settings,
 ) -> None:
     with session_scope(session_factory) as session:
         repo = Repository(session)
@@ -115,7 +168,9 @@ def _run_job_in_background(
             logger.warning("job.not_found_for_background_execution", job_id=job_id)
             return
         try:
-            AnalyzerService(repo).execute_job(job, photo_ids, regenerate_groups=regenerate_groups)
+            AnalyzerService(repo, settings=settings).execute_job(
+                job, photo_ids, regenerate_groups=regenerate_groups
+            )
         except Exception as exc:  # noqa: BLE001 - never let the background task die silently
             logger.error("job.background_execution_failed", job_id=job_id, error=str(exc))
             repo.set_job_status(job, JobStatus.FAILED, error_summary=str(exc))
@@ -128,7 +183,12 @@ def create_job(
     request: Request,
     repo: Repository = Depends(get_repository),
 ) -> JobResponse:
-    job = AnalyzerService(repo).create_job(payload.photo_ids)
+    # Resolved (and validated) before any DB writes, so a bad override
+    # (e.g. keeper weights that don't sum to 1.0) fails fast with a 400
+    # instead of after a job row already exists.
+    settings = _resolve_settings(payload.overrides())
+
+    job = AnalyzerService(repo, settings=settings).create_job(payload.photo_ids)
     # Commit explicitly (rather than relying on the request-scoped
     # dependency's teardown timing) so the job row is durable before the
     # background task — running in its own session/connection — looks it up.
@@ -140,6 +200,7 @@ def create_job(
         job.id,
         payload.photo_ids,
         payload.regenerate_groups,
+        settings,
     )
     return _job_response(job)
 

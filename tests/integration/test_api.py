@@ -211,6 +211,60 @@ def test_high_confidence_blur_photo_is_excluded_from_near_duplicate_grouping(
     assert analysis["blur_confidence"] >= 0.75
 
 
+def test_job_rejects_keeper_weights_that_dont_sum_to_one(
+    client: TestClient, tmp_path: Path
+) -> None:
+    image = make_sharp_jpeg(tmp_path / "solo.jpg")
+    client.post("/api/v1/photos/register", json={"photos": [_register_payload(image, T0)]})
+
+    response = client.post(
+        "/api/v1/jobs", json={"weight_sharpness": 0.9, "weight_exposure": 0.9}
+    )
+    assert response.status_code == 400
+
+    # The invalid request must not leave a job row behind.
+    assert client.get("/api/v1/jobs").json() == []
+
+
+def test_job_lowered_blur_threshold_override_excludes_a_normally_sharp_photo(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """A per-request high_confidence_blur_threshold override (e.g. from the
+    Lightroom plugin's settings panel) actually changes grouping behavior,
+    not just the reported number — this is the mechanism the plugin's
+    "Detection thresholds" section relies on."""
+    # Two independently generated "sharp" checkerboards are byte-identical
+    # (deterministic pattern), so they form both an exact_duplicate group
+    # AND a burst group by default (see
+    # test_job_results_produce_exact_duplicate_and_burst_groups above).
+    sharp_a = make_sharp_jpeg(tmp_path / "a.jpg")
+    sharp_b = make_sharp_jpeg(tmp_path / "b.jpg")
+
+    photos = [
+        _register_payload(sharp_a, T0),
+        _register_payload(sharp_b, T0 + timedelta(seconds=1)),
+    ]
+    client.post("/api/v1/photos/register", json={"photos": photos})
+
+    default_job = client.post("/api/v1/jobs", json={"regenerate_groups": True}).json()
+    default_results = client.get(f"/api/v1/jobs/{default_job['job_id']}/results").json()
+    default_types = sorted(g["group_type"] for g in default_results["groups"])
+    assert default_types == ["burst", "exact_duplicate"]
+
+    # An aggressively low override (0.0) means *every* photo counts as
+    # high-confidence blur, so near-duplicate/burst comparison is skipped
+    # for both — only the unconditional exact-duplicate group remains.
+    low_threshold_job = client.post(
+        "/api/v1/jobs",
+        json={"high_confidence_blur_threshold": 0.0, "regenerate_groups": True},
+    ).json()
+    low_threshold_results = client.get(
+        f"/api/v1/jobs/{low_threshold_job['job_id']}/results"
+    ).json()
+    low_threshold_types = [g["group_type"] for g in low_threshold_results["groups"]]
+    assert low_threshold_types == ["exact_duplicate"]
+
+
 def test_job_without_regeneration_reports_no_groups(client: TestClient, tmp_path: Path) -> None:
     image = make_sharp_jpeg(tmp_path / "solo.jpg")
     client.post("/api/v1/photos/register", json={"photos": [_register_payload(image, T0)]})
