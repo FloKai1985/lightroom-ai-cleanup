@@ -499,6 +499,40 @@ memory.
   file-hash bucket, or same burst-window/phash bucket), not as an all-pairs
   comparison across the whole library.
 
+### Parallel per-photo analysis
+
+Each chunk's cache-miss photos are analyzed with a `ProcessPoolExecutor`
+(`analyzer.py`'s `_analyze_parallel`) once there's enough work to justify
+it — every worker only does pure CPU-bound work (image decode, hashing,
+metric computation via `_analyze_photo_task`, a module-level function
+so it's picklable); all `Repository` calls stay on the main process,
+since a SQLAlchemy session can't cross a process boundary.
+
+The threshold and worker count are *measured*, not assumed. Benchmarked
+sequential vs. parallel wall-clock time against realistically-sized
+photos (25MB original + 1600px textured JPEG preview, matching the
+plugin's real export pipeline) on an 8-core machine:
+
+- Below ~20 photos needing analysis, spawning worker processes and
+  re-importing cv2/PIL/imagehash in each one (~0.25-0.4s fixed cost)
+  costs *more* than the sequential work itself — parallel measured
+  0.6-0.9x (slower) for 10-16 photos. `_MIN_PHOTOS_FOR_PARALLEL_ANALYSIS`
+  (20) keeps small selections — the common case: a user analyzing a
+  handful of photos from Lightroom — on the plain sequential path.
+- Above that, worker count is capped at `pending_count //
+  _MIN_PHOTOS_PER_WORKER` (8) rather than always maxing out at
+  `os.cpu_count()`: at 30 photos, 4 workers measured 1.51x while 8
+  workers only reached 1.39x — more workers than there's work to
+  amortize their own startup cost adds overhead without benefit. This
+  cap applies even to an explicit `Settings.analysis_worker_processes`
+  override.
+- At 40-100 photos the auto-tuned pool measured a consistent 1.9-2.3x
+  speedup over sequential.
+
+`Settings.analysis_worker_processes` (`0` = auto via `os.cpu_count()`,
+`1` = force sequential) is the escape hatch for environments where
+spawning subprocesses is undesirable.
+
 ## MCP (forward-looking note, not implemented in Milestone 1)
 
 The current stable MCP Python SDK (`mcp` on PyPI, the reference

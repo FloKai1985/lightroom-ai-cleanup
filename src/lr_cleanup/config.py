@@ -36,6 +36,25 @@ class Settings(BaseSettings):
     sharpness_working_size: int = 768
     """Long-edge size (px) images are resized to before sharpness metrics."""
 
+    analysis_worker_processes: int = 0
+    """Worker processes for parallel per-photo analysis (analyzer.py).
+    `0` (default) means "use os.cpu_count()". `1` disables the process
+    pool entirely and analyzes sequentially in-process — useful for
+    debugging or environments where spawning subprocesses is undesirable
+    (e.g. some sandboxes/CI). Each photo's analysis (image decode +
+    hashing + metric computation) is CPU-bound and independent of every
+    other photo, so this parallelizes well across cores for large
+    batches; only the DB writes stay serialized on the main process.
+
+    This value is a ceiling, not a guarantee: analyzer.py only engages
+    the process pool at all above ~20 photos needing analysis, and caps
+    the actual worker count so each one gets a reasonable amount of work
+    (see analyzer.py's _MIN_PHOTOS_FOR_PARALLEL_ANALYSIS /
+    _MIN_PHOTOS_PER_WORKER). Below that, spawning worker processes and
+    re-importing their imaging libraries costs more than the sequential
+    work itself — measured, not assumed; see analyzer.py's module-level
+    comments for the benchmark this was based on."""
+
     high_confidence_blur_threshold: float = 0.55
     """blur_confidence at/above which a photo counts as a
     high_confidence_blur_candidate (docs/algorithms.md §3). Also gates
