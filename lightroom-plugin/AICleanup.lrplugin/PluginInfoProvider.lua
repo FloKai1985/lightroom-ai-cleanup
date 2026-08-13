@@ -28,7 +28,6 @@ local HttpClient = require 'HttpClient'
 local Thresholds = require 'Thresholds'
 
 local prefs = LrPrefs.prefsForPlugin()
-Thresholds.ensureDefaults( prefs )
 
 local function connectionSection( f )
 	local bind = LrView.bind
@@ -96,6 +95,7 @@ end
 
 local function thresholdsSection( f, propertyTable )
 	local bind = LrView.bind
+	Thresholds.ensureDefaults( prefs )
 	-- Built by incremental append (section[#section+1] = ...) rather than
 	-- `{ title = ..., unpack(rows) }` — `unpack` is a Lua 5.1 global that
 	-- was removed in 5.2+ (moved to table.unpack); appending by index
@@ -152,10 +152,35 @@ local function thresholdsSection( f, propertyTable )
 	return section
 end
 
+--- Wraps a section builder in pcall so a bug in one section (e.g. a typo
+--- in Thresholds.lua) can't blank out the whole Plug-in Manager panel —
+--- the other section still renders, and the failing one shows the actual
+--- Lua error message instead of silently vanishing. This can't be
+--- verified against a real Lightroom install in this environment (see
+--- docs/lightroom-plugin.md's "first real-world test" note), so failing
+--- loudly and visibly here is safer than assuming the happy path.
+local function safeSection( f, title, builder, ... )
+	local ok, result = pcall( builder, ... )
+	if ok then
+		return result
+	end
+	return {
+		title = title .. ' — failed to load',
+		f:static_text {
+			title = tostring( result ),
+			fill_horizontal = 1,
+			width_in_chars = 70,
+			height_in_lines = 4,
+		},
+	}
+end
+
 local function sectionsForTopOfDialog( f, propertyTable )
 	return {
-		connectionSection( f ),
-		thresholdsSection( f, propertyTable ),
+		safeSection( f, 'AI Cleanup', connectionSection, f ),
+		safeSection(
+			f, 'AI Cleanup: Detection & Classification Thresholds', thresholdsSection, f, propertyTable
+		),
 	}
 end
 
