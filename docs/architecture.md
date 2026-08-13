@@ -508,26 +508,43 @@ metric computation via `_analyze_photo_task`, a module-level function
 so it's picklable); all `Repository` calls stay on the main process,
 since a SQLAlchemy session can't cross a process boundary.
 
-The threshold and worker count are *measured*, not assumed. Benchmarked
-sequential vs. parallel wall-clock time against realistically-sized
-photos (25MB original + 1600px textured JPEG preview, matching the
-plugin's real export pipeline) on an 8-core machine:
+The threshold is *measured against real photos*, not assumed — and the
+first version of this measurement was wrong. It was originally
+calibrated against a synthetic benchmark (a `os.urandom()`-generated
+fake "original" file plus a synthetically-textured JPEG preview), which
+put the crossover at ~20 photos. A user reported the parallel path
+feeling slower in real use; re-investigating found the synthetic
+benchmark's fake original file was written immediately before being
+read back for its sha256 hash, so it almost certainly never left the OS
+page cache — making that cost artificially near-zero and hiding how a
+real (often-cold, disk-backed) file read behaves under concurrent access
+from several worker processes at once.
 
-- Below ~20 photos needing analysis, spawning worker processes and
-  re-importing cv2/PIL/imagehash in each one (~0.25-0.4s fixed cost)
-  costs *more* than the sequential work itself — parallel measured
-  0.6-0.9x (slower) for 10-16 photos. `_MIN_PHOTOS_FOR_PARALLEL_ANALYSIS`
-  (20) keeps small selections — the common case: a user analyzing a
-  handful of photos from Lightroom — on the plain sequential path.
-- Above that, worker count is capped at `pending_count //
-  _MIN_PHOTOS_PER_WORKER` (8) rather than always maxing out at
-  `os.cpu_count()`: at 30 photos, 4 workers measured 1.51x while 8
-  workers only reached 1.39x — more workers than there's work to
-  amortize their own startup cost adds overhead without benefit. This
-  cap applies even to an explicit `Settings.analysis_worker_processes`
-  override.
-- At 40-100 photos the auto-tuned pool measured a consistent 1.9-2.3x
-  speedup over sequential.
+Re-benchmarked against real registered RAW photos and real
+plugin-pipeline-equivalent previews (generated via macOS's `sips`), with
+several interleaved sequential/parallel trials per size to cancel out
+run-to-run noise:
+
+- 20 photos: 0.90x (slower than sequential)
+- 25 photos: 1.06x (technically positive, but too thin a margin to trust)
+- 30 photos: 1.17x
+- 35 photos: 1.41x
+- 40+ photos: consistently 1.4-2x or better
+
+`_MIN_PHOTOS_FOR_PARALLEL_ANALYSIS` is now `35` — chosen for a
+comfortable margin above the noisy break-even zone, not just the first
+size that averaged above 1.0x. Small selections — the common case: a
+user analyzing a handful of photos from Lightroom — stay on the plain
+sequential path.
+
+A worker-count cap (fewer, busier workers for smaller batches) was also
+part of the original synthetic-benchmark-based design. Re-tested against
+real photos across several sizes and worker counts, results were too
+noisy to support any specific capping formula — capped and uncapped
+configurations traded wins depending on the run, with no consistent
+pattern. `_resolve_worker_count` now just uses the configured value (or
+the full `os.cpu_count()` if left at the default `0`) — simpler, and no
+worse than the capped version in the data gathered.
 
 ### Shared decode across phash/sharpness/exposure
 

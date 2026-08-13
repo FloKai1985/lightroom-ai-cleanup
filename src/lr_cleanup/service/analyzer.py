@@ -41,26 +41,24 @@ logger = structlog.get_logger(__name__)
 # Below this many photos needing (re-)analysis, process-pool startup
 # overhead isn't worth it -- run sequentially in-process instead.
 #
-# Measured, not guessed: benchmarked sequential vs. parallel wall-clock
-# time analyzing realistically-sized photos (25MB original + 1600px
-# textured JPEG preview, matching the plugin's real export pipeline) on
-# an 8-core machine. Below ~20 photos, spawning worker processes and
-# re-importing cv2/PIL/imagehash in each one (~0.25-0.4s fixed cost) cost
-# more than the sequential work itself -- parallel was *slower*
-# (0.6-0.9x) for 10-16 photos, only broke even around 16-20, and only
-# became a clear win at 20+. Common Lightroom usage (selecting a handful
+# Measured against REAL photos, not synthetic ones -- an earlier version
+# of this constant (20) was calibrated against a synthetic benchmark
+# (os.urandom() "original" files + a synthetically-textured JPEG
+# preview) that turned out to be misleading: the fake original file was
+# written immediately before being read, so it almost certainly stayed
+# in the OS page cache, making its sha256 cost artificially near-zero
+# and hiding how real (disk-backed, often cold) file reads behave under
+# concurrent access. A user reported the parallel path feeling slower in
+# practice; re-benchmarked against real registered RAW photos + real
+# plugin-pipeline-equivalent previews (generated via `sips`) with
+# repeated interleaved trials to cancel out noise, and the real
+# crossover is well above 20: 20 photos measured 0.90x (slower!), 25
+# was a thin 1.06x, and it only became a reliably comfortable win at 30+
+# (1.17x) and 35+ (1.41x). Common Lightroom usage (selecting a handful
 # of photos to check) stays on the sequential path, which is also what
 # every existing single/two-photo unit test exercises via the plain
 # `self.analyze_one` call path.
-_MIN_PHOTOS_FOR_PARALLEL_ANALYSIS = 20
-
-# Worker count is capped so each worker gets at least this many photos --
-# also measured, not guessed: at a fixed 20-30 photos, using fewer,
-# better-utilized workers beat maxing out at cpu_count (e.g. 30 photos:
-# 4 workers hit 1.51x, 8 workers only 1.39x -- more workers than there's
-# work to amortize their startup cost just adds overhead for no benefit).
-_MIN_PHOTOS_PER_WORKER = 8
-
+_MIN_PHOTOS_FOR_PARALLEL_ANALYSIS = 35
 
 class PhotoAnalysisError(Exception):
     """A single photo failed to analyze. Caught per-photo so one bad file
@@ -280,15 +278,20 @@ class AnalyzerService:
 
         return job
 
-    def _resolve_worker_count(self, pending_count: int) -> int:
-        """Configured (or auto-detected) worker count, capped so each
-        worker gets at least `_MIN_PHOTOS_PER_WORKER` photos. Applies even
-        to an explicit `analysis_worker_processes` override -- there's no
-        benefit to spinning up more workers than there's work to amortize
-        their startup cost, regardless of what's configured."""
+    def _resolve_worker_count(self) -> int:
+        """Configured worker count, or `os.cpu_count()` if left at the
+        default (`0`). An earlier version of this capped the worker count
+        for smaller batches (fewer, busier workers beating a full
+        cpu_count() pool), based on a synthetic benchmark. Re-tested
+        against real photos with repeated trials and the result was too
+        noisy to support any specific formula -- capped and uncapped
+        traded wins depending on the run, with no consistent pattern.
+        Given that, using the full configured/auto count is the simpler,
+        no-worse choice; _MIN_PHOTOS_FOR_PARALLEL_ANALYSIS is what
+        actually carries the real, reproducible signal from that
+        investigation."""
         configured = self.settings.analysis_worker_processes
-        desired = configured if configured >= 1 else max(1, os.cpu_count() or 1)
-        return min(desired, max(1, pending_count // _MIN_PHOTOS_PER_WORKER))
+        return configured if configured >= 1 else max(1, os.cpu_count() or 1)
 
     def _analyze_pending(
         self,
@@ -308,7 +311,7 @@ class AnalyzerService:
             self._analyze_sequential(pending, job, log)
             return
 
-        worker_count = self._resolve_worker_count(len(pending))
+        worker_count = self._resolve_worker_count()
         if worker_count == 1:
             self._analyze_sequential(pending, job, log)
         else:

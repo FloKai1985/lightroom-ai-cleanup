@@ -46,14 +46,14 @@ class Settings(BaseSettings):
     other photo, so this parallelizes well across cores for large
     batches; only the DB writes stay serialized on the main process.
 
-    This value is a ceiling, not a guarantee: analyzer.py only engages
-    the process pool at all above ~20 photos needing analysis, and caps
-    the actual worker count so each one gets a reasonable amount of work
-    (see analyzer.py's _MIN_PHOTOS_FOR_PARALLEL_ANALYSIS /
-    _MIN_PHOTOS_PER_WORKER). Below that, spawning worker processes and
-    re-importing their imaging libraries costs more than the sequential
-    work itself — measured, not assumed; see analyzer.py's module-level
-    comments for the benchmark this was based on."""
+    This value only applies at all above ~35 photos needing analysis
+    (see analyzer.py's _MIN_PHOTOS_FOR_PARALLEL_ANALYSIS) — below that,
+    spawning worker processes and re-importing their imaging libraries
+    costs more than the sequential work itself. Measured against real
+    registered photos with repeated trials, not assumed; see analyzer.py's
+    module-level comments for the investigation this was based on
+    (an earlier, lower threshold turned out to be based on a flawed
+    synthetic benchmark and made real jobs slower, not faster)."""
 
     high_confidence_blur_threshold: float = 0.55
     """blur_confidence at/above which a photo counts as a
