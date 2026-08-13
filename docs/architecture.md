@@ -444,14 +444,22 @@ which is more surprising than not.
   to the background task (`_run_job_in_background` gained a `settings`
   parameter) — both must use the *same* resolved values, not each
   independently call `get_settings()` and silently diverge.
-- **`lightroom-plugin/AICleanup.lrplugin/Thresholds.lua`** (new) is the
-  single source of truth for the ten fields' `LrPrefs` keys, API field
-  names, defaults, and help text — used by both
-  `PluginInfoProvider.lua` (renders the settings UI from
-  `Thresholds.DEFINITIONS`) and `AnalyzeSelected.lua`
-  (`Thresholds.buildApiOverrides(prefs)` builds the override payload
-  merged into every job request). One list, not two hand-kept-in-sync
-  ones.
+- The ten fields' `LrPrefs` keys, API field names, defaults, and (in the
+  Plug-in Manager copy) help text live in a `THRESHOLD_DEFINITIONS` table
+  duplicated in both `PluginInfoProvider.lua` (renders the settings UI)
+  and `AnalyzeSelected.lua` (`buildThresholdOverrides()` builds the
+  override payload merged into every job request). This was originally a
+  single shared `Thresholds.lua` module required by both files; after a
+  real-world "Could not load toolkit script: Thresholds" failure that
+  could not be reproduced or root-caused in this environment (no way to
+  exercise Lightroom's actual `require`/module-loading behavior here —
+  file encoding, BOM, quarantine attributes, and comment-bracket syntax
+  were all checked and ruled out, but no definitive cause was found), the
+  module was deleted and its contents inlined into both consumers. This
+  duplication is a deliberate trade against an undiagnosable class of
+  risk (new shared-file discovery/loading), not an oversight — a comment
+  in each file points at the other and at `config.py`'s `Settings`
+  defaults as the things that must stay in sync by hand.
 - Fields are stored as **strings** in `LrPrefs`, parsed with `tonumber()`
   at send time (falling back to the field's own default if parsing
   fails, e.g. the user leaves a field blank or types garbage) — not bound
@@ -460,11 +468,19 @@ which is more surprising than not.
   against a real source, consistent with docs/lightroom-plugin.md's
   "don't guess the SDK" discipline; a plain string-bound `f:edit_field` is
   the one pattern already confirmed working here (the backend-URL field).
+- `PluginInfoProvider.lua`'s `sectionsForTopOfDialog` wraps each section
+  builder in a `safeSection` pcall so a bug in one section (e.g. a future
+  edit to the thresholds panel) can't blank out the whole Plug-in Manager
+  panel — the failing section shows the actual Lua error message inline
+  instead of the opaque "could not load" failure the user hit here.
 - Verified end to end, not just unit-tested in isolation: built a job
-  payload via `Thresholds.buildApiOverrides` + `Json.lua`, confirmed
+  payload via `buildThresholdOverrides()` + `Json.lua`, confirmed
   `phash_max_distance` (an `int` field on the backend) encodes as a bare
   `8`, not `8.0`, then POSTed that exact JSON string to a real running
-  `TestClient`-backed app and confirmed `202 Accepted`.
+  `TestClient`-backed app and confirmed `202 Accepted`. The inlined
+  `buildThresholdOverrides`/`ensureThresholdDefaults`/
+  `resetThresholdDefaults` logic was re-tested standalone after the
+  inlining to confirm it behaves identically to the original module.
 
 ## Incremental analysis / scale
 

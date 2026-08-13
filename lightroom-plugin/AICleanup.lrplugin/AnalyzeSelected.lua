@@ -25,7 +25,6 @@ local LrPrefs = import 'LrPrefs'
 
 local HttpClient = require 'HttpClient'
 local ReviewResults = require 'ReviewResults'
-local Thresholds = require 'Thresholds'
 
 local prefs = LrPrefs.prefsForPlugin()
 
@@ -40,6 +39,38 @@ local COCOA_TO_UNIX_EPOCH_OFFSET = 978307200
 
 local EXPORT_LONG_EDGE = 1600
 local EXPORT_JPEG_QUALITY = 0.85 -- SDK's 0..1 scale; "quality approximately 85" on Lightroom's 0-100 UI scale
+
+-- Keep in sync with PluginInfoProvider.lua's identical table (prefsKey /
+-- default pairs only -- apiField is the thing that differs by consumer).
+-- Originally factored into a shared Thresholds.lua required by both
+-- files; inlined into each after a real-world "Could not load toolkit
+-- script: Thresholds" failure that couldn't be reproduced or diagnosed
+-- in this environment -- see PluginInfoProvider.lua's header comment.
+local THRESHOLD_DEFINITIONS = {
+	{ prefsKey = 'burstWindowSeconds', apiField = 'burst_window_seconds', default = '10' },
+	{ prefsKey = 'phashMaxDistance', apiField = 'phash_max_distance', default = '8' },
+	{ prefsKey = 'aspectRatioTolerance', apiField = 'aspect_ratio_tolerance', default = '0.05' },
+	{ prefsKey = 'highConfidenceBlurThreshold', apiField = 'high_confidence_blur_threshold', default = '0.75' },
+	{ prefsKey = 'highlightClipThreshold', apiField = 'highlight_clip_threshold', default = '0.98' },
+	{ prefsKey = 'shadowClipThreshold', apiField = 'shadow_clip_threshold', default = '0.02' },
+	{ prefsKey = 'weightSharpness', apiField = 'weight_sharpness', default = '0.55' },
+	{ prefsKey = 'weightExposure', apiField = 'weight_exposure', default = '0.25' },
+	{ prefsKey = 'weightTechnical', apiField = 'weight_technical', default = '0.10' },
+	{ prefsKey = 'weightExistingPreference', apiField = 'weight_existing_preference', default = '0.10' },
+}
+
+--- Builds the { api_field = number, ... } table merged into every
+--- POST /api/v1/jobs request body. Falls back to the definition's default
+--- for anything that doesn't parse as a number -- never sends nil or a
+--- raw string to the API.
+local function buildThresholdOverrides()
+	local overrides = {}
+	for _, def in ipairs( THRESHOLD_DEFINITIONS ) do
+		local raw = prefs[ def.prefsKey ]
+		overrides[ def.apiField ] = tonumber( raw ) or tonumber( def.default )
+	end
+	return overrides
+end
 
 --------------------------------------------------------------------------------
 
@@ -242,11 +273,10 @@ local function run( context )
 
 	progressScope:setCaption( 'Starting analysis job...' )
 	-- Threshold/weight overrides from the Plug-in Manager settings panel
-	-- (Thresholds.lua) ride along with every job. `nil` fields would be
-	-- dropped by Json.lua's encoder anyway, but buildApiOverrides always
-	-- returns a concrete number per field (falling back to its own
-	-- default), so every job explicitly states what it used.
-	local jobRequest = Thresholds.buildApiOverrides( prefs )
+	-- ride along with every job -- buildThresholdOverrides always returns
+	-- a concrete number per field (falling back to its own default), so
+	-- every job explicitly states what it used.
+	local jobRequest = buildThresholdOverrides()
 	jobRequest.photo_ids = photoIds
 	jobRequest.regenerate_groups = true
 	local jobOk, job = LrTasks.pcall( HttpClient.postJson, '/api/v1/jobs', jobRequest )
