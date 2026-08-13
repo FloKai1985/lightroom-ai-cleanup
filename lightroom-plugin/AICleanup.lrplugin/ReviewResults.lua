@@ -42,11 +42,15 @@ local COLLECTION_NEAR_DUPES = '04 – Near Duplicates'
 local COLLECTION_REVIEW = '05 – Review Required'
 local COLLECTION_PROCESSED = '06 – Processed'
 
--- Same threshold as src/lr_cleanup/analysis/sharpness.py's
--- is_high_confidence_blur default. Not read from the backend because this
--- only decides *collection membership* (a plugin-local UX convenience);
--- the authoritative blur_confidence number is always the one written to
--- AI Blur Confidence, regardless of this threshold.
+-- Must match src/lr_cleanup/config.py's high_confidence_blur_threshold
+-- (LR_CLEANUP_HIGH_CONFIDENCE_BLUR_THRESHOLD). Not read from the backend
+-- because this is a plugin-local UX decision (collection membership +
+-- which label wins, below) layered on top of a number the backend already
+-- computed — the authoritative blur_confidence is always the one written
+-- to AI Blur Confidence regardless of this threshold. If the two drift
+-- apart, the backend's threshold (which actually gates near-duplicate
+-- grouping — see docs/algorithms.md §2) still wins for *why* a photo has
+-- no group; this one only controls the label/collection shown here.
 local HIGH_CONFIDENCE_BLUR_THRESHOLD = 0.75
 
 -- Near-duplicate/burst ranking is preferred over an exact-duplicate
@@ -124,6 +128,21 @@ local function formatNumber( n )
 	return string.format( '%.4f', n )
 end
 
+--- Blur takes priority over group-based ranking: a high-confidence-blur
+--- photo is never in a near-duplicate/burst group (the backend excludes
+--- it — docs/algorithms.md §2), so it would normally just show a blank
+--- recommendation; this makes that explicit instead, and keeps
+--- "out of focus" and "likely redundant" from ever being conflated for a
+--- single photo. A blurry photo that's *also* in an exact_duplicate group
+--- (byte-identical to something else) still reads OUT_OF_FOCUS here — the
+--- exact-duplicate fact is still visible via AI Duplicate Type/Group.
+local function effectiveRecommendation( analysis, groupInfo )
+	if analysis.blur_confidence >= HIGH_CONFIDENCE_BLUR_THRESHOLD then
+		return 'OUT_OF_FOCUS'
+	end
+	return groupInfo.recommendation or ''
+end
+
 --- Writes AI plugin metadata and files each photo into the appropriate
 --- review collection(s).
 ---
@@ -147,7 +166,7 @@ function ReviewResults.applyResults( catalog, photoRecords, jobResults )
 			photo:setPropertyForPlugin( _PLUGIN, Fields.duplicateGroup, info.duplicateGroupId and tostring( info.duplicateGroupId ) or '' )
 			photo:setPropertyForPlugin( _PLUGIN, Fields.similarityGroup, info.similarityGroupId and tostring( info.similarityGroupId ) or '' )
 			photo:setPropertyForPlugin( _PLUGIN, Fields.keeperScore, formatNumber( info.keeperScore ) )
-			photo:setPropertyForPlugin( _PLUGIN, Fields.recommendation, info.recommendation or '' )
+			photo:setPropertyForPlugin( _PLUGIN, Fields.recommendation, effectiveRecommendation( record.analysis, info ) )
 		end
 	end )
 
@@ -167,9 +186,13 @@ function ReviewResults.applyResults( catalog, photoRecords, jobResults )
 			if info.similarityGroupId then
 				collections[ COLLECTION_NEAR_DUPES ]:addPhotos( { photo } )
 			end
-			if info.recommendation == 'KEEPER' then
+			-- Same precedence as the AI Recommendation field: a photo that's
+			-- out of focus is never filed as a Keeper just because it also
+			-- happens to be the "best of" an exact-duplicate group.
+			local recommendation = effectiveRecommendation( record.analysis, info )
+			if recommendation == 'KEEPER' then
 				collections[ COLLECTION_KEEPERS ]:addPhotos( { photo } )
-			elseif info.recommendation == 'REVIEW' then
+			elseif recommendation == 'REVIEW' then
 				collections[ COLLECTION_REVIEW ]:addPhotos( { photo } )
 			end
 		end

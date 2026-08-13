@@ -36,6 +36,14 @@ class Settings(BaseSettings):
     sharpness_working_size: int = 768
     """Long-edge size (px) images are resized to before sharpness metrics."""
 
+    high_confidence_blur_threshold: float = 0.75
+    """blur_confidence at/above which a photo counts as a
+    high_confidence_blur_candidate (docs/algorithms.md §3). Also gates
+    grouping: a photo this blurry is excluded from near-duplicate/burst
+    comparison entirely (docs/algorithms.md §2) — its "reason for cleanup"
+    is out-of-focus, not "worse than its sharper duplicate," so it never
+    gets a chance to be mislabeled as both."""
+
     # --- Similarity / grouping thresholds (docs/algorithms.md §2) ---
     burst_window_seconds: float = 10.0
     phash_max_distance: int = 8

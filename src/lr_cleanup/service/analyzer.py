@@ -214,8 +214,21 @@ class AnalyzerService:
             if p.id in analyses
         ]
 
+        # A high-confidence-blur photo's "reason for cleanup" is out of
+        # focus, full stop — it never enters near-duplicate/burst
+        # comparison, so it can't also come back labeled LIKELY_REDUNDANT
+        # (confusing: which is it?) or KEEPER (misleading: keeper of what,
+        # a blurry shot?). Exact-duplicate detection stays unconditional —
+        # it's a free hash-bucket lookup, and "this exact file exists
+        # elsewhere" is still useful even if the file itself is blurry.
+        # See docs/algorithms.md §2.
+        blur_threshold = self.settings.high_confidence_blur_threshold
+        near_dup_candidates = [
+            g for g in grouping_inputs if analyses[g.photo_id].blur_confidence < blur_threshold
+        ]
+
         results = group_exact_duplicates(grouping_inputs) + group_near_duplicates(
-            grouping_inputs,
+            near_dup_candidates,
             self.settings.burst_window_seconds,
             self.settings.phash_max_distance,
             self.settings.aspect_ratio_tolerance,

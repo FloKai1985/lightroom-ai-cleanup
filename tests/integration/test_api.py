@@ -137,8 +137,11 @@ def test_job_results_produce_exact_duplicate_and_burst_groups(
     client: TestClient, tmp_path: Path
 ) -> None:
     # Two independently generated "sharp" checkerboards are byte-identical
-    # (deterministic pattern) -> exact duplicate. A blurred version of the
-    # same content, captured moments later, is a near-duplicate/burst.
+    # (deterministic pattern) -> both an exact duplicate and a burst (same
+    # content, close in time). A heavily blurred variant crosses the
+    # high-confidence-blur threshold, so it's excluded from near-duplicate
+    # grouping entirely — see test_high_confidence_blur_photo_is_excluded_
+    # from_near_duplicate_grouping below for that behavior specifically.
     sharp_a = make_sharp_jpeg(tmp_path / "sharp_a.jpg")
     sharp_b = make_sharp_jpeg(tmp_path / "sharp_b.jpg")
     blurred = make_blurred_jpeg(tmp_path / "blurred.jpg")
@@ -161,15 +164,51 @@ def test_job_results_produce_exact_duplicate_and_burst_groups(
 
     burst_group = next(g for g in results["groups"] if g["group_type"] == "burst")
     assert burst_group["generated_by_job_id"] == job_id
-    assert len(burst_group["members"]) == 3
+    assert len(burst_group["members"]) == 2
+    burst_paths = {m["original_path"] for m in burst_group["members"]}
+    assert burst_paths == {str(sharp_a), str(sharp_b)}
     ranks = sorted(m["rank"] for m in burst_group["members"])
-    assert ranks == [1, 2, 3]
+    assert ranks == [1, 2]
     keeper = next(m for m in burst_group["members"] if m["rank"] == 1)
     assert keeper["recommendation"] == "KEEPER"
 
     # The dedicated group-detail endpoint returns the same data.
     group_detail = client.get(f"/api/v1/groups/{burst_group['group_id']}").json()
     assert group_detail == burst_group
+
+
+def test_high_confidence_blur_photo_is_excluded_from_near_duplicate_grouping(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """A photo whose blur_confidence crosses the high-confidence-blur
+    threshold never enters near-duplicate/burst comparison — its "reason
+    for cleanup" is out of focus, not "worse than its sharper duplicate."
+    See docs/algorithms.md §2 and config.py's high_confidence_blur_threshold.
+    """
+    sharp = make_sharp_jpeg(tmp_path / "sharp.jpg")
+    blurred = make_blurred_jpeg(tmp_path / "blurred.jpg")
+
+    photos = [
+        _register_payload(sharp, T0),
+        _register_payload(blurred, T0 + timedelta(seconds=1)),
+    ]
+    client.post("/api/v1/photos/register", json={"photos": photos})
+
+    job_id = client.post("/api/v1/jobs", json={"regenerate_groups": True}).json()["job_id"]
+    results = client.get(f"/api/v1/jobs/{job_id}/results").json()
+
+    # Close in time, visually similar content -> would have formed a burst
+    # group before the blur pre-filter existed. Now: no group at all, since
+    # the sharp photo has no other non-blurry near-duplicate to pair with.
+    assert results["groups"] == []
+
+    blurred_photo_id = next(
+        p["photo_id"]
+        for p in client.get("/api/v1/photos/blurry", params={"min_confidence": 0.0}).json()
+        if p["original_path"] == str(blurred)
+    )
+    analysis = client.get(f"/api/v1/photos/{blurred_photo_id}/analysis").json()
+    assert analysis["blur_confidence"] >= 0.75
 
 
 def test_job_without_regeneration_reports_no_groups(client: TestClient, tmp_path: Path) -> None:

@@ -368,6 +368,34 @@ everything under `lightroom-plugin/` as verified-by-reading until it's
 been exercised in a real Lightroom Classic install; this was the first
 time that happened.
 
+## Differentiating "out of focus" from "likely redundant"
+
+Prompted by real usage: after the first successful end-to-end run, a
+photo that was blurry *and* part of a burst could come back with a
+`LIKELY_REDUNDANT` recommendation — technically correct (it did lose the
+in-group ranking) but a confusing thing to tell a user, since the real
+issue (it's out of focus) had nothing to do with the group it happened to
+be near in time. Two changes, both covered in docs/algorithms.md §2/§5:
+
+- **`AnalyzerService.regenerate_groups()`** now excludes any photo at/above
+  `config.py`'s new `high_confidence_blur_threshold` (default `0.75`) from
+  near-duplicate/burst comparison before grouping runs at all — not a
+  post-hoc filter on the output, an input filter, so `keeper.py`'s ranking
+  never sees these photos and has no opinion about them. Exact-duplicate
+  detection is unaffected (it's an unconditional hash-bucket lookup with
+  no comparison cost to skip).
+- **`ReviewResults.lua::effectiveRecommendation`** composes the
+  user-facing label from both signals where they're both available: blur
+  wins outright (`OUT_OF_FOCUS`) over whatever a group ranking would have
+  said, including for the edge case of a blurry photo that's still part of
+  an exact-duplicate group (still possible, since that grouping is
+  unconditional). `Recommendation` itself
+  (`KEEPER`/`REVIEW`/`LIKELY_REDUNDANT`) was deliberately **not** extended
+  with an `OUT_OF_FOCUS` value at the database/API level — it stays scoped
+  to "ranking outcome within a group" (no migration needed), and the
+  presentation-level composition happens in the one place that already
+  has both the blur number and the group result in hand.
+
 ## Incremental analysis / scale
 
 Target: libraries with 100,000+ photos, without loading the library into
