@@ -49,7 +49,7 @@ validated against real-world false-positive/negative rates.
 
 **Blur pre-filter.** Before candidates are compared, any photo whose
 `blur_confidence` is at/above `high_confidence_blur_threshold` (default
-`0.75`, `config.py`) is excluded from near-duplicate/burst comparison
+`0.55`, `config.py`) is excluded from near-duplicate/burst comparison
 entirely — it still participates in exact-duplicate detection (§1), which
 is unconditional. This is deliberate, not a scale shortcut: a
 high-confidence-blur photo's "reason for cleanup" is that it's out of
@@ -76,11 +76,29 @@ of different source resolutions):
   intensity over small tiles; low local contrast across the frame is
   consistent with softness/blur.
 
-These four raw measurements are combined (min-max normalized against the
-population being compared, e.g. within a batch or a group) into:
+Each raw measurement is min-max normalized against a fixed calibration range
+(`_CALIBRATION` in `sharpness.py`, not relative to the current batch/group),
+clamped to `0..1`, then combined as a **weighted** average (`_WEIGHTS`) —
+not a plain mean — into:
 
 - `sharpness_score` (`0..1`, higher = sharper)
 - `blur_confidence` (`0..1`, higher = more likely blurry)
+
+The weighting (laplacian_variance 0.45, tenengrad 0.25, edge_density 0.20,
+local_contrast 0.10) and the calibration ranges themselves were
+recalibrated after a real-world false negative: a severely out-of-focus
+outdoor photo scored `blur_confidence=0.055` under the original
+unweighted mean. Root cause: `tenengrad` and `edge_density`'s calibration
+ceilings were tuned against low-detail synthetic test images and
+saturated to `1.0` for *every* real photo tested (sharp or blurry) —
+dappled sunlight/foliage generates strong gradient energy independent of
+actual focus. With those two metrics stuck voting "sharp" regardless of
+input, they diluted `laplacian_variance` — the metric that actually
+separated the real blurry/sharp photos tested — 3-to-1 in an unweighted
+mean. See `sharpness.py`'s module docstring for the full investigation
+and `tests/unit/test_sharpness.py`'s regression tests (which assert
+against the real recorded metric values, since the photo itself isn't a
+redistributable test asset).
 
 `blur_confidence` is presented with hedged terminology
 (`probable_blur`, `high_confidence_blur_candidate`) — it is a technical

@@ -50,7 +50,7 @@ local THRESHOLD_DEFINITIONS = {
 	{ prefsKey = 'burstWindowSeconds', apiField = 'burst_window_seconds', default = '10' },
 	{ prefsKey = 'phashMaxDistance', apiField = 'phash_max_distance', default = '8' },
 	{ prefsKey = 'aspectRatioTolerance', apiField = 'aspect_ratio_tolerance', default = '0.05' },
-	{ prefsKey = 'highConfidenceBlurThreshold', apiField = 'high_confidence_blur_threshold', default = '0.75' },
+	{ prefsKey = 'highConfidenceBlurThreshold', apiField = 'high_confidence_blur_threshold', default = '0.55' },
 	{ prefsKey = 'highlightClipThreshold', apiField = 'highlight_clip_threshold', default = '0.98' },
 	{ prefsKey = 'shadowClipThreshold', apiField = 'shadow_clip_threshold', default = '0.02' },
 	{ prefsKey = 'weightSharpness', apiField = 'weight_sharpness', default = '0.55' },

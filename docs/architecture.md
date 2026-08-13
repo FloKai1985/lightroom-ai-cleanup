@@ -378,7 +378,7 @@ issue (it's out of focus) had nothing to do with the group it happened to
 be near in time. Two changes, both covered in docs/algorithms.md §2/§5:
 
 - **`AnalyzerService.regenerate_groups()`** now excludes any photo at/above
-  `config.py`'s new `high_confidence_blur_threshold` (default `0.75`) from
+  `config.py`'s new `high_confidence_blur_threshold` (default `0.55`) from
   near-duplicate/burst comparison before grouping runs at all — not a
   post-hoc filter on the output, an input filter, so `keeper.py`'s ranking
   never sees these photos and has no opinion about them. Exact-duplicate

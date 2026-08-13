@@ -18,6 +18,7 @@ collections" sections for why these are different gates.
 ------------------------------------------------------------------------------]]
 
 local LrApplication = import 'LrApplication'
+local LrPrefs = import 'LrPrefs'
 
 local ReviewResults = {}
 
@@ -42,16 +43,21 @@ local COLLECTION_NEAR_DUPES = '04 – Near Duplicates'
 local COLLECTION_REVIEW = '05 – Review Required'
 local COLLECTION_PROCESSED = '06 – Processed'
 
--- Must match src/lr_cleanup/config.py's high_confidence_blur_threshold
--- (LR_CLEANUP_HIGH_CONFIDENCE_BLUR_THRESHOLD). Not read from the backend
--- because this is a plugin-local UX decision (collection membership +
--- which label wins, below) layered on top of a number the backend already
--- computed — the authoritative blur_confidence is always the one written
--- to AI Blur Confidence regardless of this threshold. If the two drift
--- apart, the backend's threshold (which actually gates near-duplicate
--- grouping — see docs/algorithms.md §2) still wins for *why* a photo has
--- no group; this one only controls the label/collection shown here.
-local HIGH_CONFIDENCE_BLUR_THRESHOLD = 0.75
+local prefs = LrPrefs.prefsForPlugin()
+
+--- Reads the same LrPrefs value the Plug-in Manager settings panel writes
+--- (see PluginInfoProvider.lua / AnalyzeSelected.lua's identical
+--- THRESHOLD_DEFINITIONS entry), so this label logic always uses whatever
+--- value the most recent analysis job actually sent the backend as its
+--- high_confidence_blur_threshold override. A function, not a
+--- module-level constant, because `require` caches this module across
+--- repeated menu invocations within a Lightroom session -- reading prefs
+--- fresh on every call is what lets a settings change take effect without
+--- a full plugin reload. Falls back to config.py's Settings default
+--- (0.55) if unset.
+local function highConfidenceBlurThreshold()
+	return tonumber( prefs.highConfidenceBlurThreshold ) or 0.55
+end
 
 -- Near-duplicate/burst ranking is preferred over an exact-duplicate
 -- group's ranking for keeper-related fields (recommendation, keeper
@@ -148,7 +154,7 @@ end
 --- nothing to compare against." Collapsing them would overstate what the
 --- analysis actually found for a photo that was simply never in contention.
 local function effectiveRecommendation( analysis, groupInfo )
-	if analysis.blur_confidence >= HIGH_CONFIDENCE_BLUR_THRESHOLD then
+	if analysis.blur_confidence >= highConfidenceBlurThreshold() then
 		return 'OUT_OF_FOCUS'
 	end
 	return groupInfo.recommendation or 'UNIQUE'
@@ -188,7 +194,7 @@ function ReviewResults.applyResults( catalog, photoRecords, jobResults )
 
 			collections[ COLLECTION_PROCESSED ]:addPhotos( { photo } )
 
-			if record.analysis.blur_confidence >= HIGH_CONFIDENCE_BLUR_THRESHOLD then
+			if record.analysis.blur_confidence >= highConfidenceBlurThreshold() then
 				collections[ COLLECTION_BLUR ]:addPhotos( { photo } )
 			end
 			if info.duplicateGroupId then

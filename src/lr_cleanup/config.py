@@ -36,13 +36,20 @@ class Settings(BaseSettings):
     sharpness_working_size: int = 768
     """Long-edge size (px) images are resized to before sharpness metrics."""
 
-    high_confidence_blur_threshold: float = 0.75
+    high_confidence_blur_threshold: float = 0.55
     """blur_confidence at/above which a photo counts as a
     high_confidence_blur_candidate (docs/algorithms.md §3). Also gates
     grouping: a photo this blurry is excluded from near-duplicate/burst
     comparison entirely (docs/algorithms.md §2) — its "reason for cleanup"
     is out-of-focus, not "worse than its sharper duplicate," so it never
-    gets a chance to be mislabeled as both."""
+    gets a chance to be mislabeled as both.
+
+    Lowered from 0.75 after a real-world false negative showed genuinely
+    out-of-focus real photos land around 0.5-0.6 blur_confidence, not
+    0.9+ like the heavily-blurred synthetic images the original default
+    was tuned against — see sharpness.py's module docstring for the
+    full investigation. 0.55 sits well above the 0.02-0.21 range six
+    known-sharp real photos scored in that investigation."""
 
     # --- Similarity / grouping thresholds (docs/algorithms.md §2) ---
     burst_window_seconds: float = 10.0

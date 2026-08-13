@@ -66,7 +66,7 @@ local THRESHOLD_DEFINITIONS = {
 	{
 		prefsKey = 'highConfidenceBlurThreshold',
 		label = 'Blur confidence threshold (0-1)',
-		default = '0.75',
+		default = '0.55',
 		help = 'At/above this, a photo is marked OUT_OF_FOCUS and skips duplicate comparison entirely.',
 	},
 	{
