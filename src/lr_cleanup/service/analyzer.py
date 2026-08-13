@@ -21,16 +21,17 @@ from itertools import islice
 
 import structlog
 
+from lr_cleanup.analysis._imaging import load_bgr, resize_long_edge, to_gray
 from lr_cleanup.analysis.candidate_groups import (
     PhotoForGrouping,
     group_exact_duplicates,
     group_near_duplicates,
 )
-from lr_cleanup.analysis.exposure import compute_exposure
+from lr_cleanup.analysis.exposure import compute_exposure_from_gray
 from lr_cleanup.analysis.file_hash import sha256_file
 from lr_cleanup.analysis.keeper import KeeperCandidate, rank_group
-from lr_cleanup.analysis.perceptual_hash import compute_phash
-from lr_cleanup.analysis.sharpness import compute_sharpness
+from lr_cleanup.analysis.perceptual_hash import compute_phash_from_bgr
+from lr_cleanup.analysis.sharpness import compute_sharpness_from_gray
 from lr_cleanup.config import Settings, get_settings
 from lr_cleanup.database.models import AnalysisJob, DuplicateGroup, JobStatus, Photo
 from lr_cleanup.database.repository import AnalysisResult, GroupMemberInput, Repository
@@ -92,15 +93,30 @@ def _analyze_photo_task(task: _PhotoAnalysisTask, settings: Settings) -> _PhotoA
     what makes it safe to run in a worker process. Module-level (not a
     method) so it can be pickled to worker processes; never raises — any
     failure comes back as `_PhotoAnalysisOutcome.error` so one bad photo
-    can't take down a worker or the pool."""
+    can't take down a worker or the pool.
+
+    Decodes `task.image_path` exactly once and shares the array across
+    phash/sharpness/exposure, instead of each independently re-reading
+    and re-decoding the same file (previously ~3 decodes per photo).
+    Verified this doesn't change any computed value: sharpness and
+    exposure already both decoded via OpenCV (`load_bgr`) and are
+    unchanged here in every other respect (same resize/grayscale order,
+    same `_from_gray` functions); phash previously decoded independently
+    via PIL, and PIL vs. OpenCV's decoders were confirmed to produce
+    bit-identical pixel data for this pipeline's real-world formats
+    (JPEG/PNG/TIFF) — see `perceptual_hash.compute_phash_from_bgr`."""
     try:
         file_hash = sha256_file(task.original_path)
-        phash = compute_phash(task.image_path)
-        sharpness = compute_sharpness(task.image_path, settings.sharpness_working_size)
-        exposure = compute_exposure(
-            task.image_path,
-            settings.highlight_clip_threshold,
-            settings.shadow_clip_threshold,
+        bgr = load_bgr(task.image_path)
+
+        phash = compute_phash_from_bgr(bgr)
+
+        sharpness_gray = to_gray(resize_long_edge(bgr, settings.sharpness_working_size))
+        sharpness = compute_sharpness_from_gray(sharpness_gray)
+
+        exposure_gray = to_gray(bgr)
+        exposure = compute_exposure_from_gray(
+            exposure_gray, settings.highlight_clip_threshold, settings.shadow_clip_threshold
         )
     except (OSError, ValueError) as exc:
         return _PhotoAnalysisOutcome(

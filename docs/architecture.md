@@ -529,6 +529,30 @@ plugin's real export pipeline) on an 8-core machine:
 - At 40-100 photos the auto-tuned pool measured a consistent 1.9-2.3x
   speedup over sequential.
 
+### Shared decode across phash/sharpness/exposure
+
+`_analyze_photo_task` decodes each photo's preview **once** (via
+`_imaging.load_bgr`) and reuses that array for all three signals, instead
+of each independently re-reading and re-decoding the same file from disk
+(previously: `compute_phash` via PIL, `compute_sharpness` and
+`compute_exposure` each via their own `load_bgr` call — three decodes of
+the same file per photo). `perceptual_hash.compute_phash_from_bgr` and
+`exposure.compute_exposure_from_gray` (already existed, mirroring
+`sharpness.compute_sharpness_from_gray`) are the array-based entry
+points this reuses.
+
+Verified, not assumed safe: PIL and OpenCV's JPEG/PNG/TIFF decoders were
+checked to produce bit-identical pixel data (0 Hamming distance across
+real-photo-like test images in every format the pipeline handles), and
+the full production `_analyze_photo_task` was checked end-to-end against
+the original independent-decode functions across 10 synthetic photos —
+identical `sharpness_score`, `blur_confidence`, `exposure_score`,
+`perceptual_hash`, and `file_hash` in every case. Measured impact:
+~25% reduction in per-photo analysis time (96.6ms -> 72.5ms on the same
+realistic-photo benchmark used above), which compounds with the
+parallelism above rather than competing with it — it reduces the actual
+per-task cost the process pool is dividing up.
+
 `Settings.analysis_worker_processes` (`0` = auto via `os.cpu_count()`,
 `1` = force sequential) is the escape hatch for environments where
 spawning subprocesses is undesirable.
