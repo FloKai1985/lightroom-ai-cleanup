@@ -8,9 +8,13 @@ confirmed against Adobe's official
 custommetadatasample.lrdevplugin/PluginInfoProvider.lua
 (docs/lightroom-plugin.md).
 
-THRESHOLD_DEFINITIONS below must stay in sync with the identical table in
-AnalyzeSelected.lua (which builds the POST /api/v1/jobs override payload
-from it) and with src/lr_cleanup/config.py's Settings field defaults.
+THRESHOLD_DEFINITIONS below is a superset of AnalyzeSelected.lua's table
+of the same name: every entry that mirrors a src/lr_cleanup/config.py
+Settings field (and gets sent as a POST /api/v1/jobs override) must stay
+in sync between the two by prefsKey/default. lowSharpnessThreshold is
+the one exception -- it's a plugin-local-only display threshold (see
+ReviewResults.lua) with no backend Settings field, so it's defined here
+but deliberately absent from AnalyzeSelected.lua's table.
 Originally factored into a shared Thresholds.lua required by both files;
 inlined into each instead after a real-world "Could not load toolkit
 script: Thresholds" failure that couldn't be reproduced or diagnosed in
@@ -68,6 +72,14 @@ local THRESHOLD_DEFINITIONS = {
 		label = 'Blur confidence threshold (0-1)',
 		default = '0.55',
 		help = 'At/above this, a photo is marked OUT_OF_FOCUS and skips duplicate comparison entirely.',
+	},
+	{
+		prefsKey = 'lowSharpnessThreshold',
+		label = 'Low sharpness threshold (0-1)',
+		default = '0.6',
+		help = 'Below this sharpness score, a photo is marked LOW_SHARPNESS (unless already ' ..
+			'OUT_OF_FOCUS). Plugin-local only -- unlike the blur threshold above, this does not ' ..
+			'affect duplicate grouping on the backend, only which label/collection is shown here.',
 	},
 	{
 		prefsKey = 'highlightClipThreshold',

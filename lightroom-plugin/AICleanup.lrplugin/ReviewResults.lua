@@ -38,6 +38,7 @@ local Fields = {
 local COLLECTION_SET_NAME = 'AI Photo Cleanup'
 local COLLECTION_KEEPERS = '01 – Recommended Keepers'
 local COLLECTION_BLUR = '02 – High Confidence Blur'
+local COLLECTION_LOW_SHARPNESS = '02a – Low Sharpness'
 local COLLECTION_EXACT_DUPES = '03 – Exact Duplicates'
 local COLLECTION_NEAR_DUPES = '04 – Near Duplicates'
 local COLLECTION_REVIEW = '05 – Review Required'
@@ -59,6 +60,21 @@ local function highConfidenceBlurThreshold()
 	return tonumber( prefs.highConfidenceBlurThreshold ) or 0.55
 end
 
+--- sharpness_score is exactly `1 - blur_confidence` (sharpness.py), so
+--- this and highConfidenceBlurThreshold() sit on the same underlying
+--- axis, just read from opposite ends -- this one is deliberately a
+--- separate, independent, more lenient bar: it catches photos that are
+--- noticeably softer than typical but not blurry enough to clear the
+--- OUT_OF_FOCUS bar (which takes precedence -- see effectiveRecommendation).
+--- Purely a plugin-local UX signal, never sent to the backend: unlike
+--- highConfidenceBlurThreshold, it doesn't affect grouping, only which
+--- label/collection a photo lands in here, so it has no apiField entry
+--- in AnalyzeSelected.lua's THRESHOLD_DEFINITIONS. Falls back to `0.6`
+--- if unset.
+local function lowSharpnessThreshold()
+	return tonumber( prefs.lowSharpnessThreshold ) or 0.6
+end
+
 -- Near-duplicate/burst ranking is preferred over an exact-duplicate
 -- group's ranking for keeper-related fields (recommendation, keeper
 -- score, collection placement) when a photo belongs to both, since it
@@ -67,15 +83,16 @@ local GROUP_TYPE_PRIORITY = { burst = 3, near_duplicate = 2, exact_duplicate = 1
 
 --------------------------------------------------------------------------------
 
---- Idempotently ensures the "AI Photo Cleanup" collection set and its six
---- child collections exist, returning { [name] = LrCollection }. Must be
---- called from within an async task; performs its own write-access gate.
+--- Idempotently ensures the "AI Photo Cleanup" collection set and its
+--- seven child collections exist, returning { [name] = LrCollection }.
+--- Must be called from within an async task; performs its own
+--- write-access gate.
 function ReviewResults.ensureCollections( catalog )
 	local collections = {}
 	catalog:withWriteAccessDo( 'AI Cleanup: create review collections', function()
 		local set = catalog:createCollectionSet( COLLECTION_SET_NAME, nil, true )
 		local names = {
-			COLLECTION_KEEPERS, COLLECTION_BLUR, COLLECTION_EXACT_DUPES,
+			COLLECTION_KEEPERS, COLLECTION_BLUR, COLLECTION_LOW_SHARPNESS, COLLECTION_EXACT_DUPES,
 			COLLECTION_NEAR_DUPES, COLLECTION_REVIEW, COLLECTION_PROCESSED,
 		}
 		for _, name in ipairs( names ) do
@@ -134,11 +151,11 @@ local function formatNumber( n )
 	return string.format( '%.4f', n )
 end
 
---- Every analyzed photo gets one of exactly five values — never blank —
+--- Every analyzed photo gets one of exactly six values — never blank —
 --- so "no recommendation shown" never reads as ambiguous with "not
---- analyzed yet": OUT_OF_FOCUS, KEEPER, REVIEW, LIKELY_REDUNDANT, or
---- UNIQUE (analyzed, not blurry, not part of any duplicate/near-duplicate
---- group — nothing to flag).
+--- analyzed yet": OUT_OF_FOCUS, LOW_SHARPNESS, KEEPER, REVIEW,
+--- LIKELY_REDUNDANT, or UNIQUE (analyzed, not blurry, not part of any
+--- duplicate/near-duplicate group — nothing to flag).
 ---
 --- Blur takes priority over group-based ranking: a high-confidence-blur
 --- photo is never in a near-duplicate/burst group (the backend excludes
@@ -149,6 +166,16 @@ end
 --- (byte-identical to something else) still reads OUT_OF_FOCUS here — the
 --- exact-duplicate fact is still visible via AI Duplicate Type/Group.
 ---
+--- LOW_SHARPNESS sits just below OUT_OF_FOCUS: photos that don't clear
+--- the (deliberately conservative) high-confidence blur bar but are
+--- still noticeably softer than typical, per lowSharpnessThreshold()'s
+--- separate, more lenient cutoff. Unlike OUT_OF_FOCUS, a low-sharpness
+--- photo is NOT excluded from backend grouping (that exclusion is keyed
+--- specifically to high_confidence_blur_threshold — docs/algorithms.md
+--- §2), so it can still show up with a group-based recommendation too;
+--- this label wins display precedence but the group data is still
+--- visible via AI Duplicate Type/Group like the OUT_OF_FOCUS case above.
+---
 --- UNIQUE is distinct from KEEPER on purpose: KEEPER means "won a
 --- comparison against at least one other photo"; UNIQUE means "had
 --- nothing to compare against." Collapsing them would overstate what the
@@ -156,6 +183,9 @@ end
 local function effectiveRecommendation( analysis, groupInfo )
 	if analysis.blur_confidence >= highConfidenceBlurThreshold() then
 		return 'OUT_OF_FOCUS'
+	end
+	if analysis.sharpness_score < lowSharpnessThreshold() then
+		return 'LOW_SHARPNESS'
 	end
 	return groupInfo.recommendation or 'UNIQUE'
 end
@@ -196,6 +226,8 @@ function ReviewResults.applyResults( catalog, photoRecords, jobResults )
 
 			if record.analysis.blur_confidence >= highConfidenceBlurThreshold() then
 				collections[ COLLECTION_BLUR ]:addPhotos( { photo } )
+			elseif record.analysis.sharpness_score < lowSharpnessThreshold() then
+				collections[ COLLECTION_LOW_SHARPNESS ]:addPhotos( { photo } )
 			end
 			if info.duplicateGroupId then
 				collections[ COLLECTION_EXACT_DUPES ]:addPhotos( { photo } )

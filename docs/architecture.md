@@ -400,13 +400,48 @@ Immediate follow-up, same real-usage feedback: a photo that was sharp
 *and* not part of any group fell through both branches above and got a
 blank `AI Recommendation` — indistinguishable from "not analyzed yet."
 `effectiveRecommendation` now has a third branch: `groupInfo.recommendation
-or 'UNIQUE'`, so every analyzed photo gets one of exactly five values.
-`UNIQUE` is a deliberately distinct value from `KEEPER` — `KEEPER` means
-"won a comparison," `UNIQUE` means "had nothing to compare against";
-collapsing them would overstate what was actually found. This is purely a
-plugin-layer guarantee — the backend's API responses are unchanged, and
-still have no `recommendation` at all for an ungrouped photo, since it
-genuinely computed nothing to report there.
+or 'UNIQUE'`, so every analyzed photo gets one of what was then exactly
+five values. `UNIQUE` is a deliberately distinct value from `KEEPER` —
+`KEEPER` means "won a comparison," `UNIQUE` means "had nothing to
+compare against"; collapsing them would overstate what was actually
+found. This is purely a plugin-layer guarantee — the backend's API
+responses are unchanged, and still have no `recommendation` at all for
+an ungrouped photo, since it genuinely computed nothing to report there.
+
+## `LOW_SHARPNESS`: a second, independent sharpness threshold
+
+Requested directly by the user, distinct from the two changes above: a
+way to flag technically-soft photos on their own terms, separate from
+the (deliberately conservative) blur classification. Since
+`blur_confidence` is exactly `1 - sharpness_score`, "set a sharpness
+threshold" and "set a blur threshold" are the same underlying lever
+read from opposite ends — the interesting design question was whether
+this needed to be a *second*, independent threshold or just a
+relabeling of the existing one.
+
+Went with a second threshold (`lowSharpnessThreshold`, default `0.6`,
+plugin-local via LrPrefs, exposed in the same Plug-in Manager panel as
+`highConfidenceBlurThreshold`) rather than reframing the existing one,
+because they serve different jobs: `high_confidence_blur_threshold`
+needs to stay conservative since it also gates backend grouping
+exclusion (a false positive there silently removes a photo from
+near-duplicate comparison — see the section above); a "soft photo" flag
+is purely informational display and can afford to be more sensitive.
+Keeping them separate means a user can tune "how confident before I
+call it blurry" and "how soft before I flag it at all" independently,
+rather than one number trying to do both jobs.
+
+Implementation mirrors `highConfidenceBlurThreshold()`'s existing
+pattern exactly: a function (not a cached constant) reading LrPrefs
+fresh on every call, checked in `effectiveRecommendation` right after
+the `OUT_OF_FOCUS` branch (so blur still wins outright), with its own
+`02a – Low Sharpness` collection. Deliberately has **no** `Settings`
+field in `config.py` and **no** entry in `AnalyzeSelected.lua`'s
+job-override table — unlike every other threshold in the settings
+panel, it never influences backend computation, so there's nothing to
+send. `PluginInfoProvider.lua`'s `THRESHOLD_DEFINITIONS` is now a strict
+superset of `AnalyzeSelected.lua`'s table of the same name for exactly
+this one entry; see that file's header comment.
 
 ## Per-request threshold/weight overrides (Plug-in Manager settings)
 

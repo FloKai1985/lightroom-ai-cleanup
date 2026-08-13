@@ -164,17 +164,36 @@ keeps "why does this photo need attention" unambiguous — a photo is never
 labeled both "worse than its duplicate" and "out of focus" at once.
 
 **Every analyzed photo gets a label, never a blank field.**
-`effectiveRecommendation` returns one of exactly five values:
-`OUT_OF_FOCUS`, `KEEPER`, `REVIEW`, `LIKELY_REDUNDANT`, or — for a photo
-that's sharp and isn't part of any duplicate/near-duplicate group, which
-previously fell through to a blank `AI Recommendation` — `UNIQUE`.
-`UNIQUE` is deliberately a distinct value from `KEEPER`, not a synonym:
-`KEEPER` means "won a comparison against at least one other photo";
-`UNIQUE` means "had nothing to compare against." Collapsing the two would
-overstate what the analysis actually found for a photo that was simply
-never in contention. This is a plugin-layer guarantee, not a backend
-one — the API's `GroupResponse`/`PhotoAnalysisResponse` are unaffected;
+`effectiveRecommendation` returns one of exactly six values:
+`OUT_OF_FOCUS`, `LOW_SHARPNESS`, `KEEPER`, `REVIEW`, `LIKELY_REDUNDANT`,
+or — for a photo that's sharp and isn't part of any duplicate/
+near-duplicate group, which previously fell through to a blank `AI
+Recommendation` — `UNIQUE`. `UNIQUE` is deliberately a distinct value
+from `KEEPER`, not a synonym: `KEEPER` means "won a comparison against
+at least one other photo"; `UNIQUE` means "had nothing to compare
+against." Collapsing the two would overstate what the analysis actually
+found for a photo that was simply never in contention. This is a
+plugin-layer guarantee, not a backend one — the API's
+`GroupResponse`/`PhotoAnalysisResponse` are unaffected;
 `GET /api/v1/photos/{id}/analysis` still has no `recommendation` field at
 all for an ungrouped photo, since the backend has genuinely computed
 nothing to report there. `UNIQUE` is what the plugin says on the backend's
 behalf once it also knows the photo wasn't flagged as blurry.
+
+**`LOW_SHARPNESS` is a second, independent, more lenient tier below
+`OUT_OF_FOCUS`.** Since `blur_confidence` is exactly `1 -
+sharpness_score` (§3), both are readings of the same underlying signal
+from opposite ends — `high_confidence_blur_threshold` (default `0.55`)
+is deliberately conservative (high precision, only the clearest cases),
+while `lowSharpnessThreshold` (default `0.6`, plugin-local, LrPrefs-only)
+catches photos that are noticeably softer than typical but don't clear
+that conservative bar. Unlike the blur pre-filter above, a low-sharpness
+photo is *not* excluded from grouping — that exclusion is keyed
+specifically to `high_confidence_blur_threshold` — so it can still carry
+a group-based duplicate/near-duplicate relationship even though
+`LOW_SHARPNESS` wins display precedence over it, the same way
+`OUT_OF_FOCUS` does. This threshold was added on user request for a way
+to flag technically-soft photos independent of the (intentionally
+strict) blur classification, and — because it never reaches the
+backend — has no `Settings` field in `config.py` and no corresponding
+entry in `AnalyzeSelected.lua`'s job-override table.

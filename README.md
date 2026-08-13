@@ -204,14 +204,18 @@ The Plug-in Manager's "AI Cleanup" section lets you change the backend URL
 (default `http://127.0.0.1:8765`), test the connection, and — under
 "Detection & Classification Thresholds" — tune every threshold and
 keeper-ranking weight the analysis uses (burst window, similarity
-distance, blur confidence threshold, exposure clipping thresholds, and
-the four keeper weights). These are stored locally in the plugin, sent
-with every analysis job, and take effect immediately on the next run — no
-backend restart needed. "Reset to Defaults" restores the shipped values.
-An invalid combination (e.g. keeper weights not summing to 1.0) is
-rejected with a dialog the next time you run analysis, not in the panel
-itself. Every SDK call the plugin makes is cited against an official
-Adobe sample or a real, working third-party plugin in
+distance, blur confidence threshold, low sharpness threshold, exposure
+clipping thresholds, and the four keeper weights). Most of these are
+stored locally in the plugin, sent with every analysis job, and take
+effect immediately on the next run — no backend restart needed. The low
+sharpness threshold is the one exception: it's plugin-local only (it
+doesn't affect backend grouping, only which label/collection a photo
+lands in) but lives in the same panel for a single place to configure
+everything. "Reset to Defaults" restores the shipped values. An invalid
+combination (e.g. keeper weights not summing to 1.0) is rejected with a
+dialog the next time you run analysis, not in the panel itself. Every SDK
+call the plugin makes is cited against an official Adobe sample or a
+real, working third-party plugin in
 [`docs/lightroom-plugin.md`](docs/lightroom-plugin.md) — read that doc
 before modifying anything under `lightroom-plugin/`.
 
@@ -220,11 +224,13 @@ selected photo, registers the photos and previews with the backend, runs
 an analysis job, polls for completion, then writes `AI Sharpness Score` /
 `AI Blur Confidence` / etc. as custom Lightroom metadata and files photos
 into an `AI Photo Cleanup` collection set (`01 – Recommended Keepers`
-through `06 – Processed`). Every analyzed photo gets exactly one `AI
-Recommendation` value — `OUT_OF_FOCUS`, `KEEPER`, `REVIEW`,
-`LIKELY_REDUNDANT`, or `UNIQUE` (analyzed, sharp, nothing to compare it
-against) — never blank. It never touches star ratings, color labels, pick
-flags, or original files — see [`docs/safety.md`](docs/safety.md).
+through `06 – Processed`, plus `02a – Low Sharpness`). Every analyzed
+photo gets exactly one `AI Recommendation` value — `OUT_OF_FOCUS`,
+`LOW_SHARPNESS` (noticeably soft but not blurry enough to clear the
+OUT_OF_FOCUS bar), `KEEPER`, `REVIEW`, `LIKELY_REDUNDANT`, or `UNIQUE`
+(analyzed, sharp, nothing to compare it against) — never blank. It never
+touches star ratings, color labels, pick flags, or original files — see
+[`docs/safety.md`](docs/safety.md).
 
 ## Running the MCP server
 
