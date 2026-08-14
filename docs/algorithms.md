@@ -61,20 +61,20 @@ recommendation.
 
 ## 3. Sharpness (`analysis/sharpness.py`)
 
-Four basic, complementary technical measurements, computed on a
-normalized-size grayscale conversion of the rendition (images are resized
-to a common working resolution first so scores are comparable across photos
-of different source resolutions):
+Four complementary technical measurements, computed on a normalized-size
+grayscale conversion of the rendition (images are resized to a common
+working resolution first so scores are comparable across photos of
+different source resolutions):
 
-- **Variance of Laplacian** — classic focus-measure operator; low variance
-  correlates with blur.
+- **Regional sharpness** — the dominant signal (see below): a per-tile,
+  re-blur-based focus estimate, not a single whole-frame gradient measure.
 - **Tenengrad / Sobel gradient magnitude** — mean squared gradient
-  magnitude; complements Laplacian variance, less sensitive to noise.
+  magnitude, whole-frame.
 - **Edge density** — fraction of pixels detected as edges (Canny), a coarse
-  proxy for how much fine detail survived.
+  proxy for how much fine detail survived, whole-frame.
 - **Local contrast** — standard deviation of local mean-subtracted
-  intensity over small tiles; low local contrast across the frame is
-  consistent with softness/blur.
+  intensity over small tiles, whole-frame; low local contrast across the
+  frame is consistent with softness/blur.
 
 Each raw measurement is min-max normalized against a fixed calibration range
 (`_CALIBRATION` in `sharpness.py`, not relative to the current batch/group),
@@ -84,21 +84,47 @@ not a plain mean — into:
 - `sharpness_score` (`0..1`, higher = sharper)
 - `blur_confidence` (`0..1`, higher = more likely blurry)
 
-The weighting (laplacian_variance 0.45, tenengrad 0.25, edge_density 0.20,
-local_contrast 0.10) and the calibration ranges themselves were
-recalibrated after a real-world false negative: a severely out-of-focus
-outdoor photo scored `blur_confidence=0.055` under the original
-unweighted mean. Root cause: `tenengrad` and `edge_density`'s calibration
-ceilings were tuned against low-detail synthetic test images and
-saturated to `1.0` for *every* real photo tested (sharp or blurry) —
-dappled sunlight/foliage generates strong gradient energy independent of
-actual focus. With those two metrics stuck voting "sharp" regardless of
-input, they diluted `laplacian_variance` — the metric that actually
-separated the real blurry/sharp photos tested — 3-to-1 in an unweighted
-mean. See `sharpness.py`'s module docstring for the full investigation
-and `tests/unit/test_sharpness.py`'s regression tests (which assert
-against the real recorded metric values, since the photo itself isn't a
-redistributable test asset).
+**Regional sharpness, and why it replaced whole-frame Laplacian
+variance.** The weighting and calibration went through two real-world
+recalibration rounds, both documented in full in `sharpness.py`'s module
+docstring (the short version below; that docstring is the source of
+truth if the two ever drift):
+
+1. A severely out-of-focus outdoor photo scored `blur_confidence=0.055`
+   under the original unweighted mean of four *whole-frame* metrics.
+   Root cause: `tenengrad`/`edge_density`'s calibration ceilings
+   saturated to `1.0` for every real photo regardless of focus (dappled
+   sunlight/foliage generates strong gradient energy independent of
+   actual focus), diluting `laplacian_variance` — the metric that
+   actually separated real blurry/sharp photos — 3-to-1.
+2. A shallow-depth-of-field portrait (sharp subject, deliberately
+   blurred background) scored a borderline `blur_confidence=0.47` under
+   whole-frame averaging, because the blurred background dragged the
+   frame-wide average down regardless of the subject's real sharpness.
+   Whole-frame `laplacian_variance` was replaced entirely with
+   **regional sharpness**: a per-tile, no-reference blur estimate
+   (Crete et al., 2007) that measures how much local pixel-to-pixel
+   variation is *destroyed* by a deliberate additional re-blur — a real
+   edge loses most of its variation when blurred further, while an
+   already-soft-but-high-contrast region (a blurred fence, say) doesn't
+   have much left to lose, which is what lets it discriminate genuine
+   focus from contrast/texture in a way raw gradient magnitude can't, at
+   either the whole-frame or naive-per-tile level (both were tried
+   first and didn't work — see the module docstring for the specific
+   real-photo evidence). The tile-level percentile (not the plain max)
+   requires a meaningfully-sized sharp region, not one lucky tile, to
+   register as sharp. `regional_sharpness` now carries most of the
+   combination weight (`0.80`); the other three remain whole-frame minor
+   contributors. Honest limitation: the shallow-DOF case above is
+   *improved* but lands close to (not comfortably clear of) the
+   `high_confidence_blur_threshold` boundary even after this fix — a
+   close-up portrait inherently has less high-frequency detail than a
+   busy scene even in sharp focus, which no amount of tuning a
+   hand-crafted metric fully compensates for.
+
+See `tests/unit/test_sharpness.py`'s regression tests (which assert
+against real recorded metric values, since the photos themselves aren't
+redistributable test assets) for both rounds.
 
 `blur_confidence` is presented with hedged terminology
 (`probable_blur`, `high_confidence_blur_candidate`) — it is a technical
