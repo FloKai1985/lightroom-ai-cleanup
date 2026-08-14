@@ -31,7 +31,18 @@ class Settings(BaseSettings):
     port: int = 8765
 
     # --- Analysis pipeline ---
-    analysis_version: int = 1
+    analysis_version: int = 2
+    """Bumped from 1 -> 2 after two real changes to how sharpness_score/
+    blur_confidence are computed (blur-metric recalibration, then
+    regional_sharpness replacing whole-frame laplacian_variance -- see
+    sharpness.py's module docstring). Every already-analyzed photo's
+    cached Analysis row has a fingerprint keyed to the old version
+    (compute_fingerprint), so without this bump they'd silently keep
+    showing results computed under the old, since-fixed algorithm
+    forever -- the fingerprint check would keep matching and skip
+    re-analysis. Bumping invalidates every cached result at once; the
+    next analysis run recomputes everything under the current
+    algorithm."""
     batch_size: int = 200
     sharpness_working_size: int = 768
     """Long-edge size (px) images are resized to before sharpness metrics."""
